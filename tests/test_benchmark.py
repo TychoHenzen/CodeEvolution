@@ -24,11 +24,11 @@ def test_measure_binary_size(sample_crate: Path):
 
 
 def test_run_user_benchmark_success(tmp_path: Path):
-    script = tmp_path / "bench.sh"
-    script.write_text("#!/bin/bash\necho 'time: 42.5ms'")
-    script.chmod(0o755)
+    import sys
+    script = tmp_path / "bench.py"
+    script.write_text("print('time: 42.5ms')")
     result = run_user_benchmark(
-        command=str(script),
+        command=f"{sys.executable} {script}",
         cwd=tmp_path,
         score_regex=r"time: ([\d.]+)ms",
     )
@@ -37,29 +37,29 @@ def test_run_user_benchmark_success(tmp_path: Path):
 
 
 def test_run_user_benchmark_no_regex(tmp_path: Path):
-    script = tmp_path / "bench.sh"
-    script.write_text("#!/bin/bash\nexit 0")
-    script.chmod(0o755)
-    result = run_user_benchmark(command=str(script), cwd=tmp_path, score_regex=None)
+    import sys
+    script = tmp_path / "bench.py"
+    script.write_text("pass")
+    result = run_user_benchmark(command=f"{sys.executable} {script}", cwd=tmp_path, score_regex=None)
     assert result.success is True
     assert result.score == 1.0
 
 
 def test_run_user_benchmark_failure(tmp_path: Path):
-    script = tmp_path / "bench.sh"
-    script.write_text("#!/bin/bash\nexit 1")
-    script.chmod(0o755)
-    result = run_user_benchmark(command=str(script), cwd=tmp_path, score_regex=None)
+    import sys
+    script = tmp_path / "bench.py"
+    script.write_text("import sys; sys.exit(1)")
+    result = run_user_benchmark(command=f"{sys.executable} {script}", cwd=tmp_path, score_regex=None)
     assert result.success is False
     assert result.score == 0.0
 
 
 def test_run_user_benchmark_regex_no_match(tmp_path: Path):
-    script = tmp_path / "bench.sh"
-    script.write_text("#!/bin/bash\necho 'no numbers here'")
-    script.chmod(0o755)
+    import sys
+    script = tmp_path / "bench.py"
+    script.write_text("print('no numbers here')")
     result = run_user_benchmark(
-        command=str(script),
+        command=f"{sys.executable} {script}",
         cwd=tmp_path,
         score_regex=r"time: ([\d.]+)ms",
     )
