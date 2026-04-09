@@ -1,0 +1,48 @@
+# CodeEvolution default configuration
+# All fields have sensible defaults for Rust + Ollama on RTX 4060 (8GB VRAM)
+
+ollama:
+  api_base: "http://localhost:11434/v1"
+  mutator_model: "qwen2.5-coder:7b-instruct-q4_K_M"
+  evaluator_model: "qwen2.5-coder:1.5b-instruct-q4_K_M"
+
+evolution:
+  max_iterations: 500
+  population_size: 100
+  num_islands: 3
+  migration_interval: 20
+  context_window: 4096
+  diff_based_evolution: true
+
+rust:
+  cargo_path: "cargo"
+  target_dir: null
+  test_args: []
+  clippy_args: []
+
+fitness:
+  static_analysis_weight: 0.35
+  performance_weight: 0.35
+  llm_judgment_weight: 0.30
+  clippy_weights:
+    correctness: 5
+    suspicious: 3
+    complexity: 2
+    perf: 2
+    style: 1
+
+benchmarks:
+  measure_compile_time: true
+  measure_binary_size: true
+  custom_command: null
+  custom_command_score_regex: null
+
+llm_judgment:
+  enabled: true
+  top_quartile_only: true
+  num_runs: 3
+  dimensions:
+    - readability
+    - rust_idiomaticity
+    - maintainability
+    - design
