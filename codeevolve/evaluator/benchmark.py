@@ -54,6 +54,27 @@ def measure_loc(program_path: Path) -> int:
     return total
 
 
+_TIME_UNIT_TO_MS = {"s": 1000.0, "ms": 1.0, "µs": 0.001, "us": 0.001, "ns": 0.000001}
+
+
+def _extract_score(regex: str, text: str) -> float:
+    """Extract a numeric score from text using a regex.
+
+    If the regex has one capture group, the raw number is returned.
+    If it has two groups and the second is a time unit (s/ms/µs/us/ns),
+    the value is normalized to milliseconds. This handles Criterion
+    output where different benchmarks report in different units.
+    """
+    match = re.search(regex, text)
+    if not match:
+        return 0.0
+    score = float(match.group(1))
+    if match.lastindex and match.lastindex >= 2:
+        unit = match.group(2)
+        score *= _TIME_UNIT_TO_MS.get(unit, 1.0)
+    return score
+
+
 def run_user_benchmark(
     command: str,
     cwd: Path,
@@ -64,6 +85,9 @@ def run_user_benchmark(
 
     If the process times out, partial stdout is still searched for a score.
     This handles benchmarks where some cases complete but slower ones time out.
+
+    If the regex has two capture groups (value + unit), the score is
+    normalized to milliseconds using standard time unit conversions.
     """
     try:
         proc = subprocess.run(
@@ -81,11 +105,7 @@ def run_user_benchmark(
             score=1.0 if returncode == 0 else 0.0,
             output=stdout,
         )
-    match = re.search(score_regex, stdout)
-    if match:
-        score = float(match.group(1))
-    else:
-        score = 0.0
+    score = _extract_score(score_regex, stdout)
     return BenchmarkResult(
         success=returncode == 0,
         score=score,

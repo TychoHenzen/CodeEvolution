@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from codeevolve.evaluator.benchmark import (
+    _extract_score,
     measure_binary_size,
     measure_compile_time,
     measure_loc,
@@ -92,10 +93,10 @@ def test_run_user_benchmark_timeout_with_partial_output(tmp_path: Path):
         result = run_user_benchmark(
             command="cargo bench",
             cwd=tmp_path,
-            score_regex=r"time:\s+\[\S+ \S+\s+([\d.]+) ms",
+            score_regex=r"time:\s+\[\S+ \S+\s+([\d.]+) (s|ms|µs|us|ns)",
         )
     assert result.success is False
-    assert result.score == 941.18
+    assert result.score == 941.18  # 941.18 * 1.0 (ms)
 
 
 def test_run_user_benchmark_timeout_no_output(tmp_path: Path):
@@ -124,3 +125,44 @@ def test_run_user_benchmark_timeout_no_regex(tmp_path: Path):
         )
     assert result.success is False
     assert result.score == 0.0
+
+
+# --- Unit normalization tests ---
+
+CRITERION_REGEX = r"time:\s+\[\S+ \S+\s+([\d.]+) (s|ms|µs|us|ns)"
+
+
+def test_extract_score_microseconds():
+    text = "foo/100 time:   [58.200 µs 61.000 µs 63.800 µs]"
+    score = _extract_score(CRITERION_REGEX, text)
+    assert score == pytest.approx(0.061)  # 61 µs → 0.061 ms
+
+
+def test_extract_score_milliseconds():
+    text = "foo/10000 time:   [933.59 ms 941.18 ms 947.50 ms]"
+    score = _extract_score(CRITERION_REGEX, text)
+    assert score == pytest.approx(941.18)
+
+
+def test_extract_score_seconds():
+    text = "foo/big time:   [1.2000 s 1.3500 s 1.5000 s]"
+    score = _extract_score(CRITERION_REGEX, text)
+    assert score == pytest.approx(1350.0)  # 1.35 s → 1350 ms
+
+
+def test_extract_score_nanoseconds():
+    text = "foo/tiny time:   [100.00 ns 120.50 ns 140.00 ns]"
+    score = _extract_score(CRITERION_REGEX, text)
+    assert score == pytest.approx(0.0001205)  # 120.5 ns → ms
+
+
+def test_extract_score_no_unit_group():
+    """Single capture group regex — no unit conversion, raw number returned."""
+    text = "score: 42.5 points"
+    score = _extract_score(r"score: ([\d.]+)", text)
+    assert score == 42.5
+
+
+def test_extract_score_no_match():
+    score = _extract_score(r"time: ([\d.]+)", "nothing here")
+    assert score == 0.0
