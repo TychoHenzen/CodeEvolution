@@ -1,0 +1,29 @@
+[
+  {
+    "reason": "compiler-message",
+    "message": {
+      "code": {"code": "clippy::needless_return", "explanation": null},
+      "level": "warning",
+      "message": "unneeded `return` statement",
+      "spans": [{"file_name": "src/lib.rs", "line_start": 3, "line_end": 3}]
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "message": {
+      "code": {"code": "clippy::cast_possible_truncation", "explanation": null},
+      "level": "warning",
+      "message": "casting `i64` to `i32` may truncate the value",
+      "spans": [{"file_name": "src/lib.rs", "line_start": 7, "line_end": 7}]
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "message": {
+      "code": {"code": "clippy::unwrap_used", "explanation": null},
+      "level": "warning",
+      "message": "used `unwrap()` on a `Result` value",
+      "spans": [{"file_name": "src/lib.rs", "line_start": 12, "line_end": 12}]
+    }
+  }
+]
