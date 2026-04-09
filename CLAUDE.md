@@ -4,55 +4,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CodeEvolution is a local evolutionary code optimization system inspired by Google DeepMind's AlphaEvolve. It uses an LLM-driven evolutionary loop to iteratively mutate and improve code, with a multi-layered fitness evaluation pipeline. The target hardware is an RTX 4060 (8GB VRAM) running models via Ollama.
+CodeEvolution is a CLI tool that wraps OpenEvolve to provide batteries-included evolutionary code optimization for Rust projects. Users run `codeevolve init` in a Rust project, then `codeevolve run` to evolve their code using LLMs via Ollama.
 
-The system evolves code by: sampling a parent program from a population database, building a prompt with inspirations, generating a diff via LLM, applying it, evaluating the result, and storing it back. See `Reference.md` for the full design rationale.
+See `Reference.md` for the design rationale and `docs/superpowers/specs/2026-04-09-codeevolution-design.md` for the full spec.
 
 ## Tech Stack
 
-- **Python 3.13** with venv at `.venv/`
-- **Ollama** for local LLM inference (OpenAI-compatible API at `http://localhost:11434/v1`)
-- **Target models**: Qwen2.5-Coder-7B Q4_K_M (mutator, ~5GB) + Qwen2.5-Coder-1.5B Q4_K_M (evaluator, ~1.5GB)
-- **Frameworks**: OpenEvolve (`pip install openevolve`) or ShinkaEvolve for the evolutionary loop
-
-## Architecture
-
-The system has five core components:
-
-1. **Program Database** — MAP-Elites grid + island-based evolution. Maintains population diversity by mapping solutions onto feature dimensions and running independent populations with periodic migration.
-
-2. **Prompt Sampler** — Constructs rich prompts: system instruction, high-scoring "inspiration" programs from the database, the parent program with fitness scores, and SEARCH/REPLACE diff format instructions.
-
-3. **LLM Ensemble** — Two-tier model setup. The 7B mutator generates the bulk of candidates (breadth). Optionally, a larger model provides occasional "Pro-tier" mutations (depth). Both run concurrently in Ollama.
-
-4. **Evaluator Pipeline** — Four-layer gated evaluation:
-   - **Layer 1**: Hard gates — compilation + tests (fail = fitness zero)
-   - **Layer 2**: Static analysis — Clippy lints weighted by category
-   - **Layer 3**: Performance benchmarks — frame time, compile time, binary size, memory
-   - **Layer 4**: LLM quality judgment — 3-5x median aggregation on 1-5 Likert scales (only for top-quartile candidates)
-
-5. **Evolution Controller** — Async orchestrator running the generate-evaluate loop. Target: 4-8 cycles/minute.
-
-## Key Design Constraints
-
-- Both models must fit in VRAM simultaneously (6.5GB of 8GB). No 14B models.
-- Context windows kept short (2K-4K tokens) via Ollama `num_ctx`.
-- LLM evaluation reserved for top-quartile candidates only to manage compute budget.
-- ShinkaEvolve's sample-efficient algorithms preferred (~150 evaluations vs thousands).
+- Python 3.13, Click (CLI), OpenEvolve (evolutionary engine), Jinja2 (templates), PyYAML, openai (Ollama client)
+- Ollama for local LLM inference at `http://localhost:11434/v1`
+- Target models: Qwen2.5-Coder-7B (mutator) + 1.5B (evaluator) via Ollama
 
 ## Commands
 
 ```bash
-# Activate venv (Windows paths, WSL environment)
-source .venv/bin/activate  # or: .venv/Scripts/activate
+# Install in dev mode (Windows Python venv in WSL)
+pip install -e ".[dev]"
 
-# Install dependencies (once frameworks are added)
-pip install -r requirements.txt
+# Run all tests (MUST use venv Python, not system python3)
+.venv/Scripts/python.exe -m pytest tests/ -v
 
-# Run Ollama with flash attention
-OLLAMA_FLASH_ATTENTION=1 ollama serve
+# Run a single test
+.venv/Scripts/python.exe -m pytest tests/test_cargo.py::test_parse_clippy_json -v
 
-# Pull required models
-ollama pull qwen2.5-coder:7b-instruct-q4_K_M
-ollama pull qwen2.5-coder:1.5b-instruct-q4_K_M
+# Run the CLI
+.venv/Scripts/python.exe -c "from codeevolve.cli import main; main()"
+codeevolve init --path /path/to/rust/project
+codeevolve run --config .codeevolve/evolution.yaml
 ```
+
+## Architecture
+
+The system is a thin wrapper over OpenEvolve with two CLI commands:
+
+1. **`codeevolve init`** (`init_project.py`) — scans a Rust crate, inserts EVOLVE-BLOCK markers, generates `.codeevolve/` with config YAML + evaluator.
+2. **`codeevolve run`** (`runner.py`) — validates Ollama, builds OpenEvolve config, calls `run_evolution()`, displays progress.
+
+The core value-add is the **4-layer evaluation pipeline** (`evaluator/pipeline.py`):
+- Layer 1: `cargo.py` — hard gates (cargo build + cargo test)
+- Layer 2: `cargo.py` — Clippy static analysis with weighted lint scoring
+- Layer 3: `benchmark.py` — compile time, binary size, optional user benchmark
+- Layer 4: `llm_judge.py` — Ollama-based quality judgment (top-quartile only, 3-run median)
+
+Config is a single dataclass hierarchy (`config.py`) loaded from YAML, with defaults in `codeevolve/defaults/evolution.yaml`.
+
+## Key Constraints
+
+- Rust-only in v1 (no multi-language)
+- Ollama-only (no external API support)
+- Single-crate only (workspace members must be targeted individually via --path)
+- Both models must fit in 8GB VRAM simultaneously
+- The `.venv/` uses Windows Python 3.13 — always run tests with `.venv/Scripts/python.exe -m pytest`, not system `python3`
