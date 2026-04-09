@@ -60,23 +60,34 @@ def run_user_benchmark(
     score_regex: Optional[str] = None,
     timeout: int = 120,
 ) -> BenchmarkResult:
-    """Run user-provided benchmark command, optionally extract a score via regex."""
-    proc = subprocess.run(
-        command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
-    )
+    """Run user-provided benchmark command, optionally extract a score via regex.
+
+    If the process times out, partial stdout is still searched for a score.
+    This handles benchmarks where some cases complete but slower ones time out.
+    """
+    try:
+        proc = subprocess.run(
+            command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
+        )
+        stdout = proc.stdout
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired as e:
+        stdout = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        returncode = 124
+
     if score_regex is None:
         return BenchmarkResult(
-            success=proc.returncode == 0,
-            score=1.0 if proc.returncode == 0 else 0.0,
-            output=proc.stdout,
+            success=returncode == 0,
+            score=1.0 if returncode == 0 else 0.0,
+            output=stdout,
         )
-    match = re.search(score_regex, proc.stdout)
+    match = re.search(score_regex, stdout)
     if match:
         score = float(match.group(1))
     else:
         score = 0.0
     return BenchmarkResult(
-        success=proc.returncode == 0,
+        success=returncode == 0,
         score=score,
-        output=proc.stdout,
+        output=stdout,
     )
