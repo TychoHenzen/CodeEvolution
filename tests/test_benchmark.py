@@ -6,6 +6,7 @@ import pytest
 from codeevolve.evaluator.benchmark import (
     measure_binary_size,
     measure_compile_time,
+    measure_loc,
     run_user_benchmark,
     BenchmarkResult,
 )
@@ -21,6 +22,19 @@ def test_measure_binary_size(sample_crate: Path):
     subprocess.run(["cargo", "build"], cwd=sample_crate, capture_output=True)
     size_bytes = measure_binary_size(sample_crate)
     assert size_bytes > 0
+
+
+def test_measure_loc(tmp_path: Path):
+    rs_file = tmp_path / "test.rs"
+    rs_file.write_text("fn main() {\n    // comment\n    println!(\"hi\");\n\n}\n")
+    # non-empty, non-comment lines: "fn main() {", '    println!("hi");', "}"
+    assert measure_loc(rs_file) == 3
+
+
+def test_measure_loc_empty_file(tmp_path: Path):
+    rs_file = tmp_path / "empty.rs"
+    rs_file.write_text("")
+    assert measure_loc(rs_file) == 0
 
 
 def test_run_user_benchmark_success(tmp_path: Path):

@@ -35,4 +35,5 @@ def evaluate(program_path: str) -> dict:
         "compile_time": result.compile_time,
         "binary_size": float(result.binary_size),
         "tests_passed": float(result.tests_passed),
+        "loc": float(result.loc),
     }

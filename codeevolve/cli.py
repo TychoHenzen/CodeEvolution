@@ -72,8 +72,9 @@ def init(path: Path):
 
     custom_benchmark = None
     custom_regex = None
-    if click.confirm("\nDo you have a custom benchmark command?", default=False):
-        custom_benchmark = click.prompt("Benchmark command (e.g., cargo bench)")
+    click.echo("\nBy default, the optimizer measures compile time, binary size, and lines of code.")
+    if click.confirm("Do you also want to measure runtime performance? (requires a benchmark command like 'cargo bench')", default=False):
+        custom_benchmark = click.prompt("Benchmark command")
         custom_regex = click.prompt(
             "Regex to extract score from output (or Enter to use exit code)",
             default="",

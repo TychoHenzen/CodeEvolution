@@ -50,6 +50,8 @@ def format_iteration_line(
     parent_clippy_warnings: Optional[int] = None,
     binary_size: int = 0,
     parent_binary_size: Optional[int] = None,
+    loc: int = 0,
+    parent_loc: Optional[int] = None,
     llm_ran: bool = False,
     llm_score: float = 0.0,
     score: float = 0.0,
@@ -93,6 +95,14 @@ def format_iteration_line(
         elif binary_size > parent_binary_size:
             size_delta = f" (was {parent_mb:.1f} MB) - regressed"
     lines.append(f"  |- Size:     {size_mb:.1f} MB{size_delta}")
+
+    loc_delta = ""
+    if parent_loc is not None:
+        if loc < parent_loc:
+            loc_delta = f" (was {parent_loc}) - improved"
+        elif loc > parent_loc:
+            loc_delta = f" (was {parent_loc}) - regressed"
+    lines.append(f"  |- LoC:      {loc}{loc_delta}")
 
     if llm_ran:
         lines.append(f"  |- LLM:      {llm_score:.2f}")

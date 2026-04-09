@@ -44,6 +44,16 @@ def measure_binary_size(project_path: Path, target_dir: Optional[str] = None) ->
     return total
 
 
+def measure_loc(program_path: Path) -> int:
+    """Count non-empty, non-comment lines in the evolved file."""
+    total = 0
+    for line in program_path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("//"):
+            total += 1
+    return total
+
+
 def run_user_benchmark(
     command: str,
     cwd: Path,

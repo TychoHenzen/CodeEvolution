@@ -15,6 +15,7 @@ from codeevolve.evaluator.cargo import (
 from codeevolve.evaluator.benchmark import (
     measure_binary_size,
     measure_compile_time,
+    measure_loc,
     run_user_benchmark,
 )
 from codeevolve.evaluator.llm_judge import judge_code
@@ -33,6 +34,7 @@ class EvaluationResult:
     clippy_warnings: int = 0
     binary_size: int = 0
     compile_time: float = 0.0
+    loc: int = 0
     error: str = ""
 
 
@@ -97,7 +99,8 @@ class EvaluationPipeline:
         # --- Layer 3: Performance ---
         compile_time = 0.0
         binary_size = 0
-        perf_components = []
+        loc = measure_loc(Path(program_path))
+        perf_components = [-loc]  # fewer lines is better
 
         if cfg.benchmarks.measure_compile_time:
             compile_time = measure_compile_time(project_path, cargo)
@@ -161,4 +164,5 @@ class EvaluationPipeline:
             clippy_warnings=len(clippy.warnings),
             binary_size=binary_size,
             compile_time=compile_time,
+            loc=loc,
         )

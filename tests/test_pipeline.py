@@ -70,7 +70,8 @@ def test_pipeline_full_pass(mock_read_text, mock_build, mock_test, mock_clippy, 
 @patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
 @patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_skips_llm_if_not_top_quartile(mock_build, mock_test, mock_clippy, mock_compile_time, mock_binary_size, pipeline):
+@patch("pathlib.Path.read_text", return_value="fn main() {}")
+def test_pipeline_skips_llm_if_not_top_quartile(mock_read_text, mock_build, mock_test, mock_clippy, mock_compile_time, mock_binary_size, pipeline):
     mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
     mock_test.return_value = MagicMock(success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0)
     mock_clippy.return_value = MagicMock(success=True, warnings=[{"code": "clippy::style"}] * 20, warning_counts={"style": 20}, elapsed_seconds=0.5)
