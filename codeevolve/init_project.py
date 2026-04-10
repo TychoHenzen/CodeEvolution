@@ -47,11 +47,11 @@ def scan_rs_files(project_path: Path) -> list[Path]:
 
 def insert_evolve_markers(rs_file: Path) -> None:
     """Wrap file content in EVOLVE-BLOCK markers if not already present."""
-    content = rs_file.read_text()
+    content = rs_file.read_text(encoding="utf-8")
     if "EVOLVE-BLOCK-START" in content:
         return
     wrapped = f"// EVOLVE-BLOCK-START\n{content}// EVOLVE-BLOCK-END\n"
-    rs_file.write_text(wrapped)
+    rs_file.write_text(wrapped, encoding="utf-8")
 
 
 def regenerate_evaluator(
