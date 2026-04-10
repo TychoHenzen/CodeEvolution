@@ -198,6 +198,7 @@ class CodeEvolveConfig:
         return {
             "max_iterations": self.evolution.max_iterations,
             "diff_based_evolution": diff_mode,
+            "max_code_length": 200000,
             "file_suffix": ".rs",
             # Null seed: let each LLM call use a fresh random state.
             # A fixed seed (OpenEvolve defaults to 42) makes the model
