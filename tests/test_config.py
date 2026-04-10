@@ -8,9 +8,13 @@ from codeevolve.config import CodeEvolveConfig, load_config
 def test_load_default_config():
     """Loading with no path returns defaults."""
     config = load_config()
-    assert config.ollama.api_base == "http://localhost:11434/v1"
-    assert config.ollama.mutator_model == "qwen2.5-coder:7b-instruct-q4_K_M"
-    assert config.ollama.evaluator_model == "qwen2.5-coder:7b-instruct-q4_K_M"
+    assert config.llama_server.server_path == "llama-server"
+    assert config.llama_server.model_path == "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
+    assert config.llama_server.port == 8080
+    assert config.llama_server.gpu_layers == 30
+    assert config.llama_server.context_size == 4096
+    assert config.llama_server.threads == 8
+    assert config.llama_server.flash_attn is True
     assert config.evolution.max_iterations == 500
     assert config.fitness.static_analysis_weight == 0.35
 
@@ -18,8 +22,9 @@ def test_load_default_config():
 def test_load_config_from_yaml(tmp_path: Path):
     """Loading from a YAML file overrides defaults."""
     yaml_content = """
-ollama:
-  api_base: "http://custom:1234/v1"
+llama_server:
+  port: 9090
+  gpu_layers: 20
 evolution:
   max_iterations: 100
 """
@@ -27,10 +32,11 @@ evolution:
     config_path.write_text(yaml_content)
 
     config = load_config(config_path)
-    assert config.ollama.api_base == "http://custom:1234/v1"
+    assert config.llama_server.port == 9090
+    assert config.llama_server.gpu_layers == 20
     assert config.evolution.max_iterations == 100
     # non-overridden fields keep defaults
-    assert config.ollama.mutator_model == "qwen2.5-coder:7b-instruct-q4_K_M"
+    assert config.llama_server.model_path == "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
 
 
 def test_load_config_missing_file():
@@ -54,5 +60,17 @@ def test_config_to_openevolve_dict():
     oe_dict = config.to_openevolve_dict()
     assert oe_dict["max_iterations"] == 500
     assert oe_dict["diff_based_evolution"] is False
-    assert oe_dict["llm"]["api_base"] == "http://localhost:11434/v1"
-    assert oe_dict["llm"]["models"][0]["name"] == "qwen2.5-coder:7b-instruct-q4_K_M"
+    assert oe_dict["llm"]["api_base"] == "http://localhost:8080/v1"
+    assert "qwen2.5-coder-14b-instruct-q4_k_m" in oe_dict["llm"]["models"][0]["name"]
+
+
+def test_config_api_base_property():
+    """api_base is derived from port."""
+    config = load_config()
+    assert config.llama_server.api_base == "http://localhost:8080/v1"
+
+
+def test_config_model_name_property():
+    """model_name is derived from model_path stem."""
+    config = load_config()
+    assert config.llama_server.model_name == "qwen2.5-coder-14b-instruct-q4_k_m"

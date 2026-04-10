@@ -11,10 +11,24 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 @dataclass
-class OllamaConfig:
-    api_base: str = "http://localhost:11434/v1"
-    mutator_model: str = "qwen2.5-coder:7b-instruct-q4_K_M"
-    evaluator_model: str = "qwen2.5-coder:7b-instruct-q4_K_M"
+class LlamaServerConfig:
+    server_path: str = "llama-server"
+    model_path: str = "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
+    port: int = 8080
+    gpu_layers: int = 30
+    context_size: int = 4096
+    threads: int = 8
+    cache_type_k: str = "q8_0"
+    cache_type_v: str = "q8_0"
+    flash_attn: bool = True
+
+    @property
+    def api_base(self) -> str:
+        return f"http://localhost:{self.port}/v1"
+
+    @property
+    def model_name(self) -> str:
+        return Path(self.model_path).stem
 
 
 @dataclass
@@ -23,7 +37,6 @@ class EvolutionConfig:
     population_size: int = 10
     num_islands: int = 3
     migration_interval: int = 20
-    context_window: int = 16384
     diff_based_evolution: bool = False
     max_fix_attempts: int = 2  # LLM retry attempts on build/test failure
 
@@ -73,7 +86,7 @@ class LlmJudgmentConfig:
 
 @dataclass
 class CodeEvolveConfig:
-    ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    llama_server: LlamaServerConfig = field(default_factory=LlamaServerConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     rust: RustConfig = field(default_factory=RustConfig)
     fitness: FitnessConfig = field(default_factory=FitnessConfig)
@@ -127,10 +140,10 @@ class CodeEvolveConfig:
             # produce identical outputs across iterations.
             "random_seed": None,
             "llm": {
-                "api_base": self.ollama.api_base,
-                "api_key": "ollama",
+                "api_base": self.llama_server.api_base,
+                "api_key": "no-key",
                 "models": [
-                    {"name": self.ollama.mutator_model, "weight": 1.0},
+                    {"name": self.llama_server.model_name, "weight": 1.0},
                 ],
                 "temperature": 1.0,
                 "max_tokens": 16384,
@@ -178,7 +191,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _dict_to_config(data: dict) -> CodeEvolveConfig:
     """Build a CodeEvolveConfig from a flat dict (parsed YAML)."""
-    ollama = OllamaConfig(**data.get("ollama", {}))
+    llama_server = LlamaServerConfig(**data.get("llama_server", {}))
     evolution = EvolutionConfig(**data.get("evolution", {}))
     rust_data = data.get("rust", {})
     rust = RustConfig(**{k: v for k, v in rust_data.items() if v is not None or k != "target_dir"})
@@ -189,7 +202,7 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
     benchmarks = BenchmarksConfig(**data.get("benchmarks", {}))
     llm_judgment = LlmJudgmentConfig(**data.get("llm_judgment", {}))
     return CodeEvolveConfig(
-        ollama=ollama,
+        llama_server=llama_server,
         evolution=evolution,
         rust=rust,
         fitness=fitness,

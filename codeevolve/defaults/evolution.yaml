@@ -1,19 +1,24 @@
 # CodeEvolution default configuration
-# All fields have sensible defaults for Rust + Ollama on RTX 4060 (8GB VRAM)
+# All fields have sensible defaults for Rust + llama.cpp on RTX 4060 (8GB VRAM)
 
-ollama:
-  api_base: "http://localhost:11434/v1"
-  mutator_model: "qwen2.5-coder:7b-instruct-q4_K_M"
-  evaluator_model: "qwen2.5-coder:7b-instruct-q4_K_M"
+llama_server:
+  server_path: "llama-server"
+  model_path: "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
+  port: 8080
+  gpu_layers: 30
+  context_size: 4096
+  threads: 8
+  cache_type_k: "q8_0"
+  cache_type_v: "q8_0"
+  flash_attn: true
 
 evolution:
   max_iterations: 500
   population_size: 100
   num_islands: 3
   migration_interval: 20
-  context_window: 16384
   diff_based_evolution: false
-  max_fix_attempts: 5  # LLM retry attempts on build/test failure
+  max_fix_attempts: 5
 
 rust:
   cargo_path: "cargo"
