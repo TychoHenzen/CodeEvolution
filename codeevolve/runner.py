@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.request import urlopen, Request
+from urllib.request import urlopen
 from urllib.error import URLError
 
 logger = logging.getLogger(__name__)
@@ -52,76 +51,22 @@ import yaml
 from codeevolve.config import CodeEvolveConfig, load_config
 
 
-def _ollama_base_url(api_base: str) -> str:
-    """Derive the Ollama root URL from the configured api_base.
-
-    Strips the ``/v1`` suffix so we can hit native endpoints like ``/api/tags``.
-    """
-    return api_base.rstrip("/").removesuffix("/v1")
-
-
-def validate_ollama(config: CodeEvolveConfig) -> list[str]:
-    """Check that Ollama is reachable and required models are available."""
-    base = _ollama_base_url(config.ollama.api_base)
+def validate_server(config: CodeEvolveConfig) -> list[str]:
+    """Check that llama-server is reachable on the configured port."""
+    url = f"http://localhost:{config.llama_server.port}/health"
     errors = []
     try:
-        resp = urlopen(f"{base}/api/tags", timeout=10)
-        data = json.loads(resp.read())
-        available = {m["name"] for m in data.get("models", [])}
-        missing = []
-        for model_name in [config.ollama.mutator_model, config.ollama.evaluator_model]:
-            if model_name not in available:
-                missing.append(model_name)
-        if missing:
-            for model_name in missing:
-                errors.append(
-                    f"Model '{model_name}' not found in Ollama. "
-                    f"Pull it with: ollama pull {model_name}"
-                )
-            if available:
-                errors.append(
-                    f"Available models at {base}: "
-                    + ", ".join(sorted(available))
-                )
-            else:
-                errors.append(
-                    f"No models found at {base}. "
-                    "Is Ollama running with models pulled?"
-                )
-    except (URLError, OSError) as e:
-        errors.append(f"Cannot connect to Ollama at {base}: {e}")
-    return errors
-
-
-def prime_ollama_models(config: CodeEvolveConfig) -> None:
-    """Load Ollama models with the configured context size.
-
-    Ollama defaults to 32K context which wastes VRAM on KV cache.
-    Sending a request with num_ctx forces a reload at the right size,
-    freeing VRAM for model layers so more runs on GPU.
-    """
-    base = _ollama_base_url(config.ollama.api_base)
-    num_ctx = config.evolution.context_window
-
-    for model_name in [config.ollama.mutator_model, config.ollama.evaluator_model]:
-        payload = json.dumps({
-            "model": model_name,
-            "prompt": "",
-            "options": {"num_ctx": num_ctx},
-            "keep_alive": "10m",
-        }).encode()
-        try:
-            req = Request(
-                f"{base}/api/generate",
-                data=payload,
-                headers={"Content-Type": "application/json"},
+        resp = urlopen(url, timeout=10)
+        if resp.status != 200:
+            errors.append(
+                f"llama-server health check failed (HTTP {resp.status}) "
+                f"on port {config.llama_server.port}"
             )
-            resp = urlopen(req, timeout=60)
-            # Read the full streaming response to completion
-            resp.read()
-            logger.info("Loaded %s with num_ctx=%d", model_name, num_ctx)
-        except (URLError, OSError) as e:
-            logger.warning("Failed to prime %s: %s", model_name, e)
+    except (URLError, OSError) as e:
+        errors.append(
+            f"Cannot connect to llama-server on port {config.llama_server.port}: {e}"
+        )
+    return errors
 
 
 def build_openevolve_config_yaml(config: CodeEvolveConfig, output_dir: Path) -> Path:

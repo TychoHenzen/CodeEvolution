@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from typing import Optional
@@ -7,7 +6,7 @@ import pytest
 
 from codeevolve.config import load_config
 from codeevolve.runner import (
-    validate_ollama,
+    validate_server,
     build_openevolve_config_yaml,
     format_iteration_line,
     _normalize_llm_diffs,
@@ -15,39 +14,24 @@ from codeevolve.runner import (
 
 
 @patch("codeevolve.runner.urlopen")
-def test_validate_ollama_success(mock_urlopen):
+def test_validate_server_success(mock_urlopen):
     mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps({"models": [
-        {"name": "qwen2.5-coder:7b-instruct-q4_K_M"},
-        {"name": "qwen2.5-coder:1.5b-instruct-q4_K_M"},
-    ]}).encode()
+    mock_resp.status = 200
+    mock_resp.read.return_value = b'{"status":"ok"}'
     mock_urlopen.return_value = mock_resp
     config = load_config()
-    errors = validate_ollama(config)
+    errors = validate_server(config)
     assert errors == []
 
 
 @patch("codeevolve.runner.urlopen")
-def test_validate_ollama_missing_model(mock_urlopen):
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps({"models": [
-        {"name": "some-other-model:latest"},
-    ]}).encode()
-    mock_urlopen.return_value = mock_resp
-    config = load_config()
-    errors = validate_ollama(config)
-    assert any("qwen2.5-coder:7b-instruct-q4_K_M" in e for e in errors)
-    assert any("Available models" in e for e in errors)
-
-
-@patch("codeevolve.runner.urlopen")
-def test_validate_ollama_unreachable(mock_urlopen):
+def test_validate_server_unreachable(mock_urlopen):
     from urllib.error import URLError
     mock_urlopen.side_effect = URLError("Connection refused")
     config = load_config()
-    errors = validate_ollama(config)
+    errors = validate_server(config)
     assert len(errors) == 1
-    assert "Connection refused" in errors[0]
+    assert "Cannot connect" in errors[0]
 
 
 def test_build_openevolve_config_yaml(tmp_path: Path):
@@ -55,7 +39,7 @@ def test_build_openevolve_config_yaml(tmp_path: Path):
     yaml_path = build_openevolve_config_yaml(config, tmp_path)
     assert yaml_path.exists()
     content = yaml_path.read_text()
-    assert "qwen2.5-coder:7b-instruct-q4_K_M" in content
+    assert "qwen2.5-coder-14b-instruct-q4_k_m" in content
 
 
 def test_format_iteration_line_success():
