@@ -129,3 +129,69 @@ codex:
     oe_dict = config.to_openevolve_dict()
     assert oe_dict["llm"]["api_base"] == "http://localhost:9090/v1"
     assert oe_dict["llm"]["models"][0]["name"] == "gpt-5.4-mini"
+
+
+# ---------------------------------------------------------------------------
+# New workspace evolution fields
+# ---------------------------------------------------------------------------
+
+
+def test_include_exclude_globs_defaults():
+    """include_globs defaults to ['src/**/*.rs'] and exclude_globs to []."""
+    config = load_config()
+    assert config.include_globs == ["src/**/*.rs"]
+    assert config.exclude_globs == []
+
+
+def test_include_exclude_globs_override(tmp_path: Path):
+    """include_globs and exclude_globs can be overridden via YAML."""
+    yaml_content = """
+include_globs:
+  - "src/**/*.rs"
+  - "benches/**/*.rs"
+exclude_globs:
+  - "src/generated/**"
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.include_globs == ["src/**/*.rs", "benches/**/*.rs"]
+    assert config.exclude_globs == ["src/generated/**"]
+
+
+def test_benchmarks_new_fields_defaults():
+    """BenchmarksConfig new fields have correct defaults."""
+    config = load_config()
+    assert config.benchmarks.custom_command == "cargo bench"
+    assert config.benchmarks.binary_package is None
+    assert config.benchmarks.upx_path is None
+    assert config.benchmarks.upx_args == ["--best", "--force"]
+
+
+def test_benchmarks_new_fields_override(tmp_path: Path):
+    """BenchmarksConfig new fields can be overridden via YAML."""
+    yaml_content = """
+benchmarks:
+  binary_package: "my_bin"
+  upx_path: "/usr/bin/upx"
+  upx_args:
+    - "--ultra-brute"
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.benchmarks.binary_package == "my_bin"
+    assert config.benchmarks.upx_path == "/usr/bin/upx"
+    assert config.benchmarks.upx_args == ["--ultra-brute"]
+
+
+def test_benchmarks_upx_args_null_in_yaml(tmp_path: Path):
+    """upx_args set to null in YAML falls back to dataclass default."""
+    yaml_content = """
+benchmarks:
+  upx_args: null
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.benchmarks.upx_args == ["--best", "--force"]

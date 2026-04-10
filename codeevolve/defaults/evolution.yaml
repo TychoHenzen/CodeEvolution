@@ -4,6 +4,11 @@
 # Provider: "local" for llama-server, "codex" for OpenAI Codex CLI, "claude" for Claude Code CLI
 provider: "codex"
 
+# Glob patterns controlling which Rust source files are included in evolution
+include_globs:
+  - "src/**/*.rs"
+exclude_globs: []
+
 codex:
   cli_path: "codex"
   model: "gpt-5.4-mini"
@@ -56,8 +61,13 @@ fitness:
 benchmarks:
   measure_compile_time: true
   measure_binary_size: true
-  custom_command: null
+  custom_command: "cargo bench"
   custom_command_score_regex: null
+  binary_package: null
+  upx_path: null
+  upx_args:
+    - "--best"
+    - "--force"
 
 llm_judgment:
   enabled: false

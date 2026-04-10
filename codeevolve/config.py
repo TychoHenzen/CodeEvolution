@@ -70,8 +70,11 @@ class FitnessConfig:
 class BenchmarksConfig:
     measure_compile_time: bool = True
     measure_binary_size: bool = True
-    custom_command: Optional[str] = None
+    custom_command: Optional[str] = "cargo bench"
     custom_command_score_regex: Optional[str] = None
+    binary_package: Optional[str] = None
+    upx_path: Optional[str] = None
+    upx_args: list[str] = field(default_factory=lambda: ["--best", "--force"])
 
 
 @dataclass
@@ -112,6 +115,8 @@ class CodeEvolveConfig:
     fitness: FitnessConfig = field(default_factory=FitnessConfig)
     benchmarks: BenchmarksConfig = field(default_factory=BenchmarksConfig)
     llm_judgment: LlmJudgmentConfig = field(default_factory=LlmJudgmentConfig)
+    include_globs: list[str] = field(default_factory=lambda: ["src/**/*.rs"])
+    exclude_globs: list[str] = field(default_factory=list)
 
     @property
     def api_base(self) -> str:
@@ -261,8 +266,14 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
     clippy_data = fitness_data.pop("clippy_weights", {})
     clippy_weights = ClippyWeights(**clippy_data)
     fitness = FitnessConfig(**fitness_data, clippy_weights=clippy_weights)
-    benchmarks = BenchmarksConfig(**data.get("benchmarks", {}))
+    benchmarks_data = data.get("benchmarks", {})
+    # Ensure upx_args is a list (YAML null becomes None)
+    if benchmarks_data.get("upx_args") is None and "upx_args" in benchmarks_data:
+        benchmarks_data = {k: v for k, v in benchmarks_data.items() if k != "upx_args"}
+    benchmarks = BenchmarksConfig(**benchmarks_data)
     llm_judgment = LlmJudgmentConfig(**data.get("llm_judgment", {}))
+    include_globs = data.get("include_globs", ["src/**/*.rs"])
+    exclude_globs = data.get("exclude_globs", [])
     return CodeEvolveConfig(
         provider=provider,
         llama_server=llama_server,
@@ -273,6 +284,8 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
         fitness=fitness,
         benchmarks=benchmarks,
         llm_judgment=llm_judgment,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
     )
 
 
