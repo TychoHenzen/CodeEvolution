@@ -172,7 +172,9 @@ def run(config_path: Path):
 
     click.echo(f"  Loading config from {config_path.relative_to(project_path.parent)}")
 
-    click.echo(f"  Starting llama-server ({config.llama_server.model_path})...")
+    model_name = Path(config.llama_server.model_path).name
+    click.echo(f"  Starting llama-server ({model_name})...")
+    click.echo(f"  Loading model into GPU ({config.llama_server.gpu_layers} layers offloaded)... this may take a minute")
     try:
         server = LlamaServer(config.llama_server)
         server.start()
