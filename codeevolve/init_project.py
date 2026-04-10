@@ -102,6 +102,8 @@ def generate_codeevolve_dir(
     rs_files: list[Path],
     custom_benchmark: Optional[str] = None,
     custom_benchmark_regex: Optional[str] = None,
+    include_globs: Optional[list[str]] = None,
+    exclude_globs: Optional[list[str]] = None,
 ) -> Path:
     """Generate the .codeevolve/ directory with config, evaluator, and README."""
     codeevolve_dir = project_path / ".codeevolve"
@@ -117,6 +119,12 @@ def generate_codeevolve_dir(
         config_data["benchmarks"]["custom_command_score_regex"] = _SingleQuotedStr(
             custom_benchmark_regex
         )
+
+    # Override globs if workspace detection provided them
+    if include_globs is not None:
+        config_data["include_globs"] = include_globs
+    if exclude_globs is not None:
+        config_data["exclude_globs"] = exclude_globs
 
     config_path = codeevolve_dir / "evolution.yaml"
     with open(config_path, "w") as f:

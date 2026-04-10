@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from codeevolve.init_project import (
     find_cargo_toml,
@@ -77,3 +78,19 @@ def test_generate_codeevolve_dir(sample_crate: Path):
     assert (codeevolve_dir / "README.md").exists()
     evaluator_code = (codeevolve_dir / "evaluator.py").read_text()
     compile(evaluator_code, "evaluator.py", "exec")
+
+
+def test_generate_codeevolve_dir_with_workspace_globs(sample_workspace: Path):
+    """Workspace globs are written into evolution.yaml when provided."""
+    rs_files = list((sample_workspace / "crates").rglob("*.rs"))
+    generate_codeevolve_dir(
+        project_path=sample_workspace,
+        rs_files=rs_files,
+        include_globs=["crates/*/src/**/*.rs"],
+        exclude_globs=["crates/game/src/card/generated/**"],
+    )
+    config_path = sample_workspace / ".codeevolve" / "evolution.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    assert config["include_globs"] == ["crates/*/src/**/*.rs"]
+    assert "crates/game/src/card/generated/**" in config["exclude_globs"]

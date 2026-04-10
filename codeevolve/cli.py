@@ -60,6 +60,8 @@ def init(path: Path):
     them for evolution, and generates configuration files in a .codeevolve/
     directory.
     """
+    from codeevolve.crate_graph import detect_workspace
+
     path = path.resolve()
 
     try:
@@ -68,31 +70,53 @@ def init(path: Path):
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    # Load default config to get include/exclude globs
-    defaults = load_config()
-    rs_files = discover_rs_files(path, defaults.include_globs, defaults.exclude_globs)
+    # Detect workspace structure
+    workspace_info = detect_workspace(path)
+    if workspace_info is not None:
+        include_globs = workspace_info.include_globs
+        exclude_globs = workspace_info.exclude_globs
+
+        click.echo(f"\n  Detected workspace with {len(workspace_info.crate_names)} crates:")
+        # Count files per crate
+        crate_counts = []
+        for crate_name in workspace_info.crate_names:
+            crate_root = workspace_info.crate_graph.crate_roots[crate_name]
+            rs_count = len(list((crate_root / "src").rglob("*.rs"))) if (crate_root / "src").exists() else 0
+            crate_counts.append(f"{crate_name} ({rs_count})")
+        click.echo("    " + ", ".join(crate_counts))
+
+        if exclude_globs:
+            click.echo("\n  Auto-excluded generated directories:")
+            for g in exclude_globs:
+                click.echo(f"    - {g}")
+    else:
+        # Single-crate fallback: use defaults
+        defaults = load_config()
+        include_globs = defaults.include_globs
+        exclude_globs = defaults.exclude_globs
+
+    rs_files = discover_rs_files(path, include_globs, exclude_globs)
     if not rs_files:
         click.echo("Error: No .rs files matched include globs", err=True)
         sys.exit(1)
 
-    click.echo(f"\nDiscovered {len(rs_files)} Rust source file(s):")
-    for f in rs_files:
-        click.echo(f"  - {f.relative_to(path)}")
+    click.echo(f"\n  Discovered {len(rs_files)} Rust source file(s)")
 
-    click.echo("\nMarking files for evolution...")
+    click.echo("\n  Marking files for evolution...")
     for f in rs_files:
         insert_evolve_markers(f)
-        click.echo(f"  Marked: {f.relative_to(path)}")
 
     codeevolve_dir = generate_codeevolve_dir(
         project_path=path,
         rs_files=rs_files,
+        include_globs=include_globs if workspace_info is not None else None,
+        exclude_globs=exclude_globs if workspace_info is not None else None,
     )
 
-    click.echo(f"\nSetup complete! Files created in {codeevolve_dir.relative_to(path)}/")
-    click.echo("\nNext steps:")
-    click.echo("  1. Edit .codeevolve/evolution.yaml (set include/exclude globs, provider, etc.)")
-    click.echo("  2. Start evolving:  codeevolve run")
+    click.echo(f"\n  Setup complete! Files created in {codeevolve_dir.relative_to(path)}/")
+    click.echo("\n  Next steps:")
+    click.echo("    1. Edit .codeevolve/evolution.yaml to set provider, binary_package, etc.")
+    click.echo("    2. Start evolving:  codeevolve run")
 
 
 @main.command()

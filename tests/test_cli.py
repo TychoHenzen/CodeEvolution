@@ -49,6 +49,21 @@ def test_init_success(mock_find, mock_discover, mock_markers, mock_generate, cli
     assert result.exit_code == 0
 
 
+def test_init_workspace_detects_crates(cli_runner, sample_workspace):
+    result = cli_runner.invoke(main, ["init", "--path", str(sample_workspace)])
+    assert result.exit_code == 0
+    assert "Detected workspace" in result.output
+    assert "engine_core" in result.output
+    assert "engine_render" in result.output
+    assert "game" in result.output
+
+
+def test_init_workspace_excludes_generated(cli_runner, sample_workspace):
+    result = cli_runner.invoke(main, ["init", "--path", str(sample_workspace)])
+    assert result.exit_code == 0
+    assert "generated" in result.output.lower()
+
+
 @patch("codeevolve.cli.LlamaServer")
 def test_run_server_start_fails(mock_server_cls, cli_runner, tmp_path):
     mock_server_cls.return_value.start.side_effect = RuntimeError("model not found")
