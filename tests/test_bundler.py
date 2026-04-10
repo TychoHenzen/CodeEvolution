@@ -9,10 +9,12 @@ import pytest
 from codeevolve.bundler import (
     create_bundle,
     create_focus_rotation,
+    create_workspace_bundle,
     extract_focus,
     extract_focus_path,
     FocusRotation,
 )
+from codeevolve.crate_graph import CrateGraph
 
 
 # ---------------------------------------------------------------------------
@@ -316,3 +318,117 @@ class TestCreateFocusRotation:
     def test_empty_raises(self):
         with pytest.raises(ValueError):
             create_focus_rotation([])
+
+
+# ---------------------------------------------------------------------------
+# Helpers for workspace bundle tests
+# ---------------------------------------------------------------------------
+
+def _setup_workspace(tmp_path: Path) -> tuple[CrateGraph, dict[str, Path]]:
+    """Create a 3-crate workspace layout and return (graph, file_map).
+
+    Crates: engine_core (no deps), engine_render (deps: engine_core),
+    game (deps: engine_core, engine_render).
+    """
+    graph = CrateGraph(
+        deps={
+            "engine_core": [],
+            "engine_render": ["engine_core"],
+            "game": ["engine_core", "engine_render"],
+        },
+        crate_roots={
+            "engine_core": tmp_path / "crates" / "engine_core",
+            "engine_render": tmp_path / "crates" / "engine_render",
+            "game": tmp_path / "crates" / "game",
+        },
+    )
+    files = {
+        "core_lib": _write_evolve(tmp_path, "crates/engine_core/src/lib.rs", "pub fn core() {}"),
+        "render_lib": _write_evolve(tmp_path, "crates/engine_render/src/lib.rs", "pub fn render() {}"),
+        "render_pipe": _write_evolve(tmp_path, "crates/engine_render/src/pipeline.rs", "pub fn pipe() {}"),
+        "game_lib": _write_evolve(tmp_path, "crates/game/src/lib.rs", "pub fn game() {}"),
+    }
+    return graph, files
+
+
+# ---------------------------------------------------------------------------
+# create_workspace_bundle
+# ---------------------------------------------------------------------------
+
+class TestCreateWorkspaceBundle:
+    def test_filters_context_to_relevant_crates(self, tmp_path: Path):
+        """Focus in engine_render: context includes engine_core, excludes game."""
+        graph, files = _setup_workspace(tmp_path)
+        all_files = list(files.values())
+        summaries = {
+            files["core_lib"]: "// file: crates/engine_core/src/lib.rs\npub fn core()",
+            files["render_pipe"]: "// file: crates/engine_render/src/pipeline.rs\npub fn pipe()",
+            files["game_lib"]: "// file: crates/game/src/lib.rs\npub fn game()",
+        }
+        bundle = create_workspace_bundle(
+            files["render_lib"], all_files, summaries, tmp_path, graph,
+        )
+        context = bundle.split("// === END CONTEXT ===")[0]
+        # engine_core is a dep of engine_render -> included
+        assert "engine_core/src/lib.rs" in context
+        # engine_render/pipeline.rs is a sibling -> included
+        assert "engine_render/src/pipeline.rs" in context
+        # game is NOT a dep of engine_render -> excluded
+        assert "game/src/lib.rs" not in context
+
+    def test_leaf_crate_has_minimal_context(self, tmp_path: Path):
+        """Focus in engine_core (no deps): only sibling files in context."""
+        graph, files = _setup_workspace(tmp_path)
+        all_files = list(files.values())
+        summaries = {
+            files["render_lib"]: "// file: crates/engine_render/src/lib.rs\npub fn render()",
+            files["game_lib"]: "// file: crates/game/src/lib.rs\npub fn game()",
+        }
+        bundle = create_workspace_bundle(
+            files["core_lib"], all_files, summaries, tmp_path, graph,
+        )
+        context = bundle.split("// === END CONTEXT ===")[0]
+        assert "engine_render" not in context
+        assert "game" not in context
+
+    def test_high_dep_crate_includes_all_deps(self, tmp_path: Path):
+        """Focus in game (deps: engine_core, engine_render): both deps in context."""
+        graph, files = _setup_workspace(tmp_path)
+        all_files = list(files.values())
+        summaries = {
+            files["core_lib"]: "// file: crates/engine_core/src/lib.rs\npub fn core()",
+            files["render_lib"]: "// file: crates/engine_render/src/lib.rs\npub fn render()",
+            files["render_pipe"]: "// file: crates/engine_render/src/pipeline.rs\npub fn pipe()",
+        }
+        bundle = create_workspace_bundle(
+            files["game_lib"], all_files, summaries, tmp_path, graph,
+        )
+        context = bundle.split("// === END CONTEXT ===")[0]
+        assert "engine_core/src/lib.rs" in context
+        assert "engine_render/src/lib.rs" in context
+        assert "engine_render/src/pipeline.rs" in context
+
+    def test_focus_content_is_correct(self, tmp_path: Path):
+        """Focus file content is included regardless of graph filtering."""
+        graph, files = _setup_workspace(tmp_path)
+        all_files = list(files.values())
+        bundle = create_workspace_bundle(
+            files["render_lib"], all_files, {}, tmp_path, graph,
+        )
+        extracted = extract_focus(bundle)
+        assert "pub fn render() {}" in extracted
+
+    def test_focus_file_excluded_from_context(self, tmp_path: Path):
+        """The focus file's own summary should not appear in context."""
+        graph, files = _setup_workspace(tmp_path)
+        all_files = list(files.values())
+        summaries = {
+            files["render_lib"]: "// file: crates/engine_render/src/lib.rs\npub fn render()",
+            files["core_lib"]: "// file: crates/engine_core/src/lib.rs\npub fn core()",
+        }
+        bundle = create_workspace_bundle(
+            files["render_lib"], all_files, summaries, tmp_path, graph,
+        )
+        context = bundle.split("// === END CONTEXT ===")[0]
+        # The focus file's summary should not be in context
+        assert "pub fn render()" not in context

@@ -26,6 +26,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from codeevolve.crate_graph import CrateGraph
 
 from codeevolve.evaluator.pipeline import parse_evolve_block
 
@@ -212,3 +216,52 @@ def create_focus_rotation(files: list[Path]) -> FocusRotation:
         A ``FocusRotation`` that cycles through the files deterministically.
     """
     return FocusRotation(files)
+
+
+# ---------------------------------------------------------------------------
+# Workspace-aware bundle creation
+# ---------------------------------------------------------------------------
+
+def create_workspace_bundle(
+    focus_file: Path,
+    all_files: list[Path],
+    summaries: dict[Path, str],
+    project_path: Path,
+    crate_graph: "CrateGraph",
+) -> str:
+    """Create a bundled program string scoped to relevant crates.
+
+    Like ``create_bundle``, but filters summaries to only include files
+    from the focus file's crate and its direct dependencies (one hop).
+
+    Args:
+        focus_file: Absolute path to the file being evolved.
+        all_files: All .rs files in the workspace (absolute paths).
+        summaries: Pre-computed summaries keyed by absolute path.
+        project_path: Project root for computing relative paths.
+        crate_graph: Dependency graph from ``crate_graph.build_crate_graph``.
+
+    Returns:
+        A single string that OpenEvolve treats as the "initial program."
+    """
+    focus_crate = crate_graph.crate_for_file(focus_file)
+
+    if focus_crate is None:
+        # Fallback: can't determine crate, include everything
+        return create_bundle(focus_file, all_files, summaries, project_path)
+
+    relevant = set(crate_graph.relevant_crates(focus_crate))
+
+    # Filter files to only those in relevant crates
+    filtered_files = [
+        f for f in all_files
+        if crate_graph.crate_for_file(f) in relevant
+    ]
+
+    # Filter summaries to only relevant files
+    filtered_summaries = {
+        f: s for f, s in summaries.items()
+        if crate_graph.crate_for_file(f) in relevant
+    }
+
+    return create_bundle(focus_file, filtered_files, filtered_summaries, project_path)
