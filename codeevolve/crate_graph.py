@@ -6,9 +6,7 @@ glob patterns for file discovery.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
-from glob import glob as stdlib_glob
 from pathlib import Path
 
 try:
