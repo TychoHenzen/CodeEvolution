@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.request import urlopen
@@ -52,20 +53,24 @@ from codeevolve.config import CodeEvolveConfig, load_config
 
 
 def validate_server(config: CodeEvolveConfig) -> list[str]:
-    """Check that llama-server is reachable on the configured port."""
-    url = f"http://localhost:{config.llama_server.port}/health"
+    """Check that the LLM backend is reachable."""
+    if config.provider == "codex":
+        port = config.codex.proxy_port
+        label = "codex proxy"
+    else:
+        port = config.llama_server.port
+        label = "llama-server"
+
+    url = f"http://localhost:{port}/health"
     errors = []
     try:
         resp = urlopen(url, timeout=10)
         if resp.status != 200:
             errors.append(
-                f"llama-server health check failed (HTTP {resp.status}) "
-                f"on port {config.llama_server.port}"
+                f"{label} health check failed (HTTP {resp.status}) on port {port}"
             )
     except (URLError, OSError) as e:
-        errors.append(
-            f"Cannot connect to llama-server on port {config.llama_server.port}: {e}"
-        )
+        errors.append(f"Cannot connect to {label} on port {port}: {e}")
     return errors
 
 
@@ -157,6 +162,26 @@ def format_iteration_line(
     return "\n".join(lines)
 
 
+def _patch_logging_utf8() -> None:
+    """Force UTF-8 encoding for logging FileHandlers on Windows.
+
+    OpenEvolve creates a ``FileHandler`` without specifying encoding.
+    On Windows this defaults to the locale codec (cp1252) which cannot
+    represent emojis used in OpenEvolve's log messages (e.g. U+1F31F).
+    """
+    if sys.platform != "win32":
+        return
+    _orig_fh_init = logging.FileHandler.__init__
+
+    def _utf8_fh_init(self, filename, mode="a", encoding=None, delay=False,
+                      errors=None):
+        if encoding is None:
+            encoding = "utf-8"
+        _orig_fh_init(self, filename, mode, encoding, delay, errors)
+
+    logging.FileHandler.__init__ = _utf8_fh_init
+
+
 def _patch_feature_dimension_defaults() -> None:
     """Ensure feature dimension metrics always exist, even on timeout.
 
@@ -209,6 +234,7 @@ def run_evolution(
 
     _patch_extract_diffs()
     _patch_feature_dimension_defaults()
+    _patch_logging_utf8()
 
     config = load_config(config_path)
 

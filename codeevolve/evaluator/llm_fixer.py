@@ -10,7 +10,7 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # Temperature escalation per retry attempt (index = attempt number)
-_TEMPERATURE_SCHEDULE = [0.3, 0.5, 0.7, 0.9, 1.0]
+_TEMPERATURE_SCHEDULE = [0.3, 0.5, 0.7, 0.7, 0.7]
 
 
 def build_fix_prompt(
@@ -65,7 +65,7 @@ def build_fix_prompt(
 {code}
 ```
 
-Fix ONLY the code above so it compiles and passes tests. Do NOT add tests, modules, or main functions. Do NOT add code that wasn't there before. Do NOT change struct definitions, derive macros, or field visibility that are defined outside the evolvable region. Only fix the errors. Output ONLY the fixed code inside a single ```rust code block.
+Fix ONLY the code above so it compiles and passes tests. You MAY add `use` statements if needed to fix compilation errors. Do NOT add tests, modules, main functions, struct definitions, enum definitions, type aliases, derive macros, or trait impls that weren't there before. Do NOT change struct definitions, derive macros, or field visibility that are defined outside the evolvable region. Only fix the errors. Output ONLY the fixed code inside a single ```rust code block.
 """
 
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from codeevolve.config import CodeEvolveConfig, load_config
+from codeevolve.config import CodeEvolveConfig, CodexConfig, load_config
 
 
 def test_load_default_config():
@@ -60,7 +60,7 @@ def test_config_to_openevolve_dict():
     oe_dict = config.to_openevolve_dict()
     assert oe_dict["max_iterations"] == 500
     assert oe_dict["diff_based_evolution"] is False
-    assert oe_dict["llm"]["api_base"] == "http://localhost:8080/v1"
+    assert oe_dict["llm"]["api_base"] == config.api_base
     assert oe_dict["llm"]["models"][0]["name"]  # model name is non-empty
 
 
@@ -74,3 +74,58 @@ def test_config_model_name_property():
     """model_name is derived from model_path stem."""
     config = load_config()
     assert config.llama_server.model_name  # derived from model_path stem
+
+
+def test_default_provider_is_codex():
+    config = load_config()
+    assert config.provider == "codex"
+
+
+def test_codex_config_defaults():
+    config = load_config()
+    assert config.codex.cli_path == "codex"
+    assert config.codex.model == "gpt-5.4-mini"
+    assert config.codex.proxy_port == 8081
+    assert config.codex.timeout == 300
+
+
+def test_convenience_properties_local(tmp_path: Path):
+    """api_base and model_name delegate to llama_server when provider=local."""
+    yaml_content = 'provider: "local"\n'
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.api_base == config.llama_server.api_base
+    assert config.model_name == config.llama_server.model_name
+
+
+def test_convenience_properties_codex(tmp_path: Path):
+    """api_base and model_name delegate to codex when provider=codex."""
+    yaml_content = """
+provider: "codex"
+codex:
+  model: "gpt-5.4-mini"
+  proxy_port: 9090
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.provider == "codex"
+    assert config.api_base == "http://localhost:9090/v1"
+    assert config.model_name == "gpt-5.4-mini"
+
+
+def test_openevolve_dict_uses_codex_when_configured(tmp_path: Path):
+    """to_openevolve_dict should use codex api_base when provider=codex."""
+    yaml_content = """
+provider: "codex"
+codex:
+  proxy_port: 9090
+  model: "gpt-5.4-mini"
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    oe_dict = config.to_openevolve_dict()
+    assert oe_dict["llm"]["api_base"] == "http://localhost:9090/v1"
+    assert oe_dict["llm"]["models"][0]["name"] == "gpt-5.4-mini"

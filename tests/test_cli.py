@@ -53,7 +53,7 @@ def test_init_success(mock_find, mock_scan, mock_markers, mock_generate, cli_run
 def test_run_server_start_fails(mock_server_cls, cli_runner, tmp_path):
     mock_server_cls.return_value.start.side_effect = RuntimeError("model not found")
     config_path = tmp_path / "evolution.yaml"
-    config_path.write_text("llama_server:\n  port: 8080\n")
+    config_path.write_text("provider: local\nllama_server:\n  port: 8080\n")
     result = cli_runner.invoke(main, ["run", "--config", str(config_path)])
     assert result.exit_code != 0
     assert "model not found" in result.output

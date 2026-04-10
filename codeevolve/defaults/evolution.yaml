@@ -1,6 +1,22 @@
 # CodeEvolution default configuration
 # All fields have sensible defaults for Rust + llama.cpp on RTX 4060 (8GB VRAM)
 
+# Provider: "local" for llama-server, "codex" for OpenAI Codex CLI, "claude" for Claude Code CLI
+provider: "codex"
+
+codex:
+  cli_path: "codex"
+  model: "gpt-5.4-mini"
+  proxy_port: 8081
+  timeout: 300
+
+claude:
+  cli_path: "claude"
+  model: "haiku"
+  effort: "low"
+  proxy_port: 8082
+  timeout: 300
+
 llama_server:
   server_path: "D:/Ollama/whiscortex-training/llama.cpp/build/bin/Release/llama-server.exe"
   model_path: "D:/Ollama/llama.cpp models/qwen2.5-coder-14b-instruct-abliterated-q4_k_m.gguf"
@@ -15,10 +31,10 @@ llama_server:
 evolution:
   max_iterations: 500
   population_size: 100
-  num_islands: 3
+  num_islands: 5
   migration_interval: 20
-  diff_based_evolution: false
-  max_fix_attempts: 2
+  diff_based_evolution: true
+  max_fix_attempts: 4
 
 rust:
   cargo_path: "cargo"
@@ -44,9 +60,9 @@ benchmarks:
   custom_command_score_regex: null
 
 llm_judgment:
-  enabled: true
+  enabled: false
   top_quartile_only: false
-  num_runs: 1
+  num_runs: 3
   dimensions:
     - readability
     - rust_idiomaticity

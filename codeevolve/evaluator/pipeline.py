@@ -283,7 +283,7 @@ class EvaluationPipeline:
 
         fixed = attempt_fix(
             code_to_fix, error_type, error_output,
-            cfg.llama_server.api_base, cfg.llama_server.model_name,
+            cfg.api_base, cfg.model_name,
             previous_attempts=previous_attempts or [],
             attempt_number=attempt_number,
             test_context=test_context if test_context is not None else self._get_test_context(),
@@ -589,8 +589,8 @@ class EvaluationPipeline:
             code = self.source_file.read_text()
             judgment = judge_code(
                 code=code,
-                api_base=cfg.llama_server.api_base,
-                model=cfg.llama_server.model_name,
+                api_base=cfg.api_base,
+                model=cfg.model_name,
                 dimensions=cfg.llm_judgment.dimensions,
                 num_runs=cfg.llm_judgment.num_runs,
             )

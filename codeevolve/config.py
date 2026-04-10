@@ -38,7 +38,7 @@ class EvolutionConfig:
     num_islands: int = 3
     migration_interval: int = 20
     diff_based_evolution: bool = False
-    max_fix_attempts: int = 2  # LLM retry attempts on build/test failure
+    max_fix_attempts: int = 4  # LLM retry attempts on build/test failure
 
 
 @dataclass
@@ -85,13 +85,49 @@ class LlmJudgmentConfig:
 
 
 @dataclass
+class CodexConfig:
+    cli_path: str = "codex"
+    model: str = "gpt-5.4-mini"
+    proxy_port: int = 8081
+    timeout: int = 300
+
+
+@dataclass
+class ClaudeConfig:
+    cli_path: str = "claude"
+    model: str = "haiku"
+    effort: str = "low"
+    proxy_port: int = 8082
+    timeout: int = 300
+
+
+@dataclass
 class CodeEvolveConfig:
+    provider: str = "local"  # "local" (llama-server), "codex", or "claude"
     llama_server: LlamaServerConfig = field(default_factory=LlamaServerConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
+    claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     rust: RustConfig = field(default_factory=RustConfig)
     fitness: FitnessConfig = field(default_factory=FitnessConfig)
     benchmarks: BenchmarksConfig = field(default_factory=BenchmarksConfig)
     llm_judgment: LlmJudgmentConfig = field(default_factory=LlmJudgmentConfig)
+
+    @property
+    def api_base(self) -> str:
+        if self.provider == "codex":
+            return f"http://localhost:{self.codex.proxy_port}/v1"
+        if self.provider == "claude":
+            return f"http://localhost:{self.claude.proxy_port}/v1"
+        return self.llama_server.api_base
+
+    @property
+    def model_name(self) -> str:
+        if self.provider == "codex":
+            return self.codex.model
+        if self.provider == "claude":
+            return self.claude.model
+        return self.llama_server.model_name
 
     def to_openevolve_dict(self, frozen_context: str = "") -> dict:
         """Convert to a dict compatible with OpenEvolve's Config.from_dict().
@@ -163,20 +199,20 @@ class CodeEvolveConfig:
             # produce identical outputs across iterations.
             "random_seed": None,
             "llm": {
-                "api_base": self.llama_server.api_base,
+                "api_base": self.api_base,
                 "api_key": "no-key",
                 "models": [
-                    {"name": self.llama_server.model_name, "weight": 1.0},
+                    {"name": self.model_name, "weight": 1.0},
                 ],
-                "temperature": 1.0,
+                "temperature": 0.7,
                 "max_tokens": 16384,
                 "timeout": 300,
             },
             "prompt": {
                 "system_message": system_msg,
                 "template_dir": str(_PROMPTS_DIR),
-                "num_top_programs": 0,
-                "num_diverse_programs": 0,
+                "num_top_programs": 3,
+                "num_diverse_programs": 2,
                 "use_template_stochasticity": True,
             },
             "database": {
@@ -190,7 +226,7 @@ class CodeEvolveConfig:
                 "timeout": 900,
                 "parallel_evaluations": 1,
             },
-            "early_stopping_patience": 40,
+            "early_stopping_patience": 60,
             "convergence_threshold": 0.001,
             "evolution_trace": {
                 "enabled": True,
@@ -214,7 +250,10 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _dict_to_config(data: dict) -> CodeEvolveConfig:
     """Build a CodeEvolveConfig from a flat dict (parsed YAML)."""
+    provider = data.get("provider", "local")
     llama_server = LlamaServerConfig(**data.get("llama_server", {}))
+    codex = CodexConfig(**data.get("codex", {}))
+    claude = ClaudeConfig(**data.get("claude", {}))
     evolution = EvolutionConfig(**data.get("evolution", {}))
     rust_data = data.get("rust", {})
     rust = RustConfig(**{k: v for k, v in rust_data.items() if v is not None or k != "target_dir"})
@@ -225,7 +264,10 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
     benchmarks = BenchmarksConfig(**data.get("benchmarks", {}))
     llm_judgment = LlmJudgmentConfig(**data.get("llm_judgment", {}))
     return CodeEvolveConfig(
+        provider=provider,
         llama_server=llama_server,
+        codex=codex,
+        claude=claude,
         evolution=evolution,
         rust=rust,
         fitness=fitness,

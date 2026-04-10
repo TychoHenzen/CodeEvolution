@@ -30,6 +30,8 @@ from codeevolve.init_project import (
 )
 from codeevolve.runner import validate_server, run_evolution
 from codeevolve.llama_server import LlamaServer
+from codeevolve.codex_proxy import CodexProxy
+from codeevolve.claude_proxy import ClaudeProxy
 
 
 @click.group()
@@ -172,17 +174,38 @@ def run(config_path: Path):
 
     click.echo(f"  Loading config from {config_path.relative_to(project_path.parent)}")
 
-    model_name = Path(config.llama_server.model_path).name
-    click.echo(f"  Starting llama-server ({model_name})...")
-    click.echo(f"  Loading model into GPU ({config.llama_server.gpu_layers} layers offloaded)... this may take a minute")
-    try:
-        server = LlamaServer(config.llama_server)
-        server.start()
-    except (RuntimeError, TimeoutError) as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    # Start the LLM backend based on provider setting.
+    backend = None
+    if config.provider == "codex":
+        click.echo(f"  Starting Codex proxy (model: {config.codex.model})...")
+        try:
+            backend = CodexProxy(config.codex)
+            backend.start()
+        except Exception as e:
+            click.echo(f"Error starting Codex proxy: {e}", err=True)
+            sys.exit(1)
+        click.echo(f"  Codex proxy ready on port {config.codex.proxy_port}")
+    elif config.provider == "claude":
+        click.echo(f"  Starting Claude proxy (model: {config.claude.model}, effort: {config.claude.effort})...")
+        try:
+            backend = ClaudeProxy(config.claude)
+            backend.start()
+        except Exception as e:
+            click.echo(f"Error starting Claude proxy: {e}", err=True)
+            sys.exit(1)
+        click.echo(f"  Claude proxy ready on port {config.claude.proxy_port}")
+    else:
+        model_name = Path(config.llama_server.model_path).name
+        click.echo(f"  Starting llama-server ({model_name})...")
+        click.echo(f"  Loading model into GPU ({config.llama_server.gpu_layers} layers offloaded)... this may take a minute")
+        try:
+            backend = LlamaServer(config.llama_server)
+            backend.start()
+        except (RuntimeError, TimeoutError) as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        click.echo(f"  llama-server ready on port {config.llama_server.port}")
 
-    click.echo(f"  llama-server ready on port {config.llama_server.port}")
     click.echo(f"  Starting evolution ({config.evolution.max_iterations} iterations, population {config.evolution.population_size})")
     click.echo()
 
@@ -216,4 +239,4 @@ def run(config_path: Path):
     except KeyboardInterrupt:
         click.echo("\n\nStopped by user. Best result saved to .codeevolve/output/best/")
     finally:
-        server.stop()
+        backend.stop()
