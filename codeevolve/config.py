@@ -267,13 +267,14 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
     clippy_weights = ClippyWeights(**clippy_data)
     fitness = FitnessConfig(**fitness_data, clippy_weights=clippy_weights)
     benchmarks_data = data.get("benchmarks", {})
-    # Ensure upx_args is a list (YAML null becomes None)
-    if benchmarks_data.get("upx_args") is None and "upx_args" in benchmarks_data:
-        benchmarks_data = {k: v for k, v in benchmarks_data.items() if k != "upx_args"}
+    # YAML null becomes None for list fields; coerce to let dataclass defaults apply
+    for _list_key in ("upx_args",):
+        if benchmarks_data.get(_list_key) is None and _list_key in benchmarks_data:
+            del benchmarks_data[_list_key]
     benchmarks = BenchmarksConfig(**benchmarks_data)
     llm_judgment = LlmJudgmentConfig(**data.get("llm_judgment", {}))
-    include_globs = data.get("include_globs", ["src/**/*.rs"])
-    exclude_globs = data.get("exclude_globs", [])
+    include_globs = data.get("include_globs") or ["src/**/*.rs"]
+    exclude_globs = data.get("exclude_globs") or []
     return CodeEvolveConfig(
         provider=provider,
         llama_server=llama_server,

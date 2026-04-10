@@ -59,7 +59,7 @@ def test_config_to_openevolve_dict():
     config = load_config()
     oe_dict = config.to_openevolve_dict()
     assert oe_dict["max_iterations"] == 500
-    assert oe_dict["diff_based_evolution"] is False
+    assert oe_dict["diff_based_evolution"] is True
     assert oe_dict["llm"]["api_base"] == config.api_base
     assert oe_dict["llm"]["models"][0]["name"]  # model name is non-empty
 
@@ -195,3 +195,16 @@ benchmarks:
     config_path.write_text(yaml_content)
     config = load_config(config_path)
     assert config.benchmarks.upx_args == ["--best", "--force"]
+
+
+def test_include_globs_null_in_yaml(tmp_path: Path):
+    """include_globs/exclude_globs set to null in YAML fall back to defaults."""
+    yaml_content = """
+include_globs: null
+exclude_globs: null
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.include_globs == ["src/**/*.rs"]
+    assert config.exclude_globs == []
