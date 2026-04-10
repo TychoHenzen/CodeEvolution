@@ -84,7 +84,7 @@ def attempt_fix(
     temperature = _TEMPERATURE_SCHEDULE[min(attempt_number, len(_TEMPERATURE_SCHEDULE) - 1)]
 
     try:
-        client = OpenAI(base_url=api_base, api_key="ollama")
+        client = OpenAI(base_url=api_base, api_key="no-key")
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],

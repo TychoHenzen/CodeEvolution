@@ -65,9 +65,9 @@ def parse_judgment_response(response: str, dimensions: list[str]) -> dict[str, f
     return scores
 
 
-def _call_ollama(api_base: str, model: str, prompt: str) -> str:
-    """Make a single chat completion call to Ollama."""
-    client = OpenAI(base_url=api_base, api_key="ollama")
+def _call_llm(api_base: str, model: str, prompt: str) -> str:
+    """Make a single chat completion call to llama-server."""
+    client = OpenAI(base_url=api_base, api_key="no-key")
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
@@ -87,7 +87,7 @@ def judge_code(
     prompt = build_judgment_prompt(code, dimensions)
     all_scores: dict[str, list[float]] = {d: [] for d in dimensions}
     for run_idx in range(num_runs):
-        response = _call_ollama(api_base, model, prompt)
+        response = _call_llm(api_base, model, prompt)
         scores = parse_judgment_response(response, dimensions)
         logger.info("LLM judge run %d/%d: %s", run_idx + 1, num_runs, scores)
         if not scores:

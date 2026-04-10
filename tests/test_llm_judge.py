@@ -54,7 +54,7 @@ def test_parse_judgment_response_clamps_scores():
     assert scores["design"] == 0.0
 
 
-@patch("codeevolve.evaluator.llm_judge._call_ollama")
+@patch("codeevolve.evaluator.llm_judge._call_llm")
 def test_judge_code_aggregates_runs(mock_call):
     """judge_code runs N times and takes medians."""
     mock_call.side_effect = [

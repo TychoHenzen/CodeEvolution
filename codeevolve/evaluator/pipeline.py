@@ -157,7 +157,7 @@ class EvaluationPipeline:
 
         fixed = attempt_fix(
             code_to_fix, error_type, error_output,
-            cfg.ollama.api_base, cfg.ollama.evaluator_model,
+            cfg.llama_server.api_base, cfg.llama_server.model_name,
             previous_attempts=previous_attempts or [],
             attempt_number=attempt_number,
         )
@@ -446,8 +446,8 @@ class EvaluationPipeline:
             code = self.source_file.read_text()
             judgment = judge_code(
                 code=code,
-                api_base=cfg.ollama.api_base,
-                model=cfg.ollama.evaluator_model,
+                api_base=cfg.llama_server.api_base,
+                model=cfg.llama_server.model_name,
                 dimensions=cfg.llm_judgment.dimensions,
                 num_runs=cfg.llm_judgment.num_runs,
             )
