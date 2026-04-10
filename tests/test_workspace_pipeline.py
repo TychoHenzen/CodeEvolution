@@ -127,7 +127,7 @@ def test_pipeline_evaluates_bundle_candidate(mock_build, mock_fix, tmp_path):
     """Pipeline extracts focus content from a bundle and evaluates it."""
     config = load_config()
     source_file = tmp_path / "lib.rs"
-    source_file.write_text("fn main() { original(); }")
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
     mock_build.return_value = MagicMock(
@@ -146,7 +146,7 @@ def test_pipeline_evaluates_bundle_candidate(mock_build, mock_fix, tmp_path):
         "// === END FOCUS ===\n"
     )
     candidate = tmp_path / "bundle_candidate.rs"
-    candidate.write_text(bundle_content)
+    candidate.write_text(bundle_content, encoding="utf-8")
 
     result = pipeline.evaluate(str(candidate))
     # Build fails, but that's fine -- we just want to verify the pipeline
@@ -154,7 +154,7 @@ def test_pipeline_evaluates_bundle_candidate(mock_build, mock_fix, tmp_path):
     assert result.passed_gates is False
 
     # Source file should be restored after evaluation
-    assert source_file.read_text() == "fn main() { original(); }"
+    assert source_file.read_text(encoding="utf-8") == "fn main() { original(); }"
 
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
@@ -168,7 +168,8 @@ def test_pipeline_bundle_with_evolve_block(mock_build, mock_fix, tmp_path):
         "// EVOLVE-BLOCK-START\n"
         "fn foo() { 1 }\n"
         "// EVOLVE-BLOCK-END\n"
-        "mod tests;\n"
+        "mod tests;\n",
+        encoding="utf-8",
     )
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
@@ -186,7 +187,7 @@ def test_pipeline_bundle_with_evolve_block(mock_build, mock_fix, tmp_path):
         "// === END FOCUS ===\n"
     )
     candidate = tmp_path / "bundle.rs"
-    candidate.write_text(bundle_content)
+    candidate.write_text(bundle_content, encoding="utf-8")
 
     pipeline.evaluate(str(candidate))
 
@@ -196,14 +197,14 @@ def test_pipeline_bundle_with_evolve_block(mock_build, mock_fix, tmp_path):
     assert "mod tests;" in pipeline._evolve_suffix
 
     # Source restored
-    assert "fn foo() { 1 }" in source_file.read_text()
+    assert "fn foo() { 1 }" in source_file.read_text(encoding="utf-8")
 
 
 def test_pipeline_bundle_empty_focus_rejected(tmp_path):
     """Bundle with empty focus content is rejected."""
     config = load_config()
     source_file = tmp_path / "lib.rs"
-    source_file.write_text("fn main() {}")
+    source_file.write_text("fn main() {}", encoding="utf-8")
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
     # Bundle with no content between FOCUS markers
@@ -215,7 +216,7 @@ def test_pipeline_bundle_empty_focus_rejected(tmp_path):
         "// === END FOCUS ===\n"
     )
     candidate = tmp_path / "empty_bundle.rs"
-    candidate.write_text(bundle_content)
+    candidate.write_text(bundle_content, encoding="utf-8")
 
     result = pipeline.evaluate(str(candidate))
     assert result.passed_gates is False

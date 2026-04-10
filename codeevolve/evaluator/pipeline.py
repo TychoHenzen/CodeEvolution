@@ -222,12 +222,12 @@ class EvaluationPipeline:
 
         tests_rs = crate_root / "src" / "tests.rs"
         if tests_rs.exists():
-            sources[tests_rs.name] = tests_rs.read_text()
+            sources[tests_rs.name] = tests_rs.read_text(encoding="utf-8")
 
         tests_dir = crate_root / "tests"
         if tests_dir.is_dir():
             for tf in sorted(tests_dir.glob("*.rs")):
-                sources[f"tests/{tf.name}"] = tf.read_text()
+                sources[f"tests/{tf.name}"] = tf.read_text(encoding="utf-8")
 
         if self._evolve_suffix and "#[cfg(test)]" in self._evolve_suffix:
             sources[f"inline ({self.focus_file.name})"] = self._evolve_suffix
@@ -318,7 +318,7 @@ class EvaluationPipeline:
         Only sends the EVOLVE-BLOCK content to the LLM, then splices the
         fix back into the original file structure.
         """
-        current_code = self.source_file.read_text()
+        current_code = self.source_file.read_text(encoding="utf-8")
 
         # Extract only the evolve-block content to send to the LLM
         if self._evolve_prefix is not None:
@@ -347,7 +347,7 @@ class EvaluationPipeline:
         else:
             spliced = fixed_content
 
-        self.source_file.write_text(spliced)
+        self.source_file.write_text(spliced, encoding="utf-8")
         return True
 
     def _extract_evolve_content(self, candidate_code: str) -> str:
@@ -383,7 +383,7 @@ class EvaluationPipeline:
         candidate.  Duplicates are rejected immediately with score 0.
         """
         # Save the original source so we can restore it after evaluation
-        original_code = self.focus_file.read_text()
+        original_code = self.focus_file.read_text(encoding="utf-8")
 
         # Lazily capture the original file structure (prefix/suffix around
         # EVOLVE-BLOCK content) so we can enforce marker boundaries.
@@ -409,7 +409,7 @@ class EvaluationPipeline:
             self._seen_hashes.add(self._original_hash)
 
         # Read candidate and extract the evolve content
-        raw_candidate = Path(program_path).read_text()
+        raw_candidate = Path(program_path).read_text(encoding="utf-8")
 
         # If the candidate is a bundle, extract just the focus file content.
         # Otherwise, fall back to single-file behavior.
@@ -467,13 +467,13 @@ class EvaluationPipeline:
         self._seen_hashes.add(candidate_hash)
 
         # Write spliced code into the actual source file
-        self.focus_file.write_text(candidate_code)
+        self.focus_file.write_text(candidate_code, encoding="utf-8")
 
         try:
             return self._evaluate_candidate()
         finally:
             # Always restore the original source file
-            self.focus_file.write_text(original_code)
+            self.focus_file.write_text(original_code, encoding="utf-8")
 
     def _evaluate_candidate(self) -> EvaluationResult:
         """Run the 4-layer pipeline on the candidate already written to disk."""
@@ -497,7 +497,7 @@ class EvaluationPipeline:
             Returns True if a novel fix was applied (caller should retry).
             Returns False if no fix or fixer is stuck.
             """
-            pre_fix = self.source_file.read_text()
+            pre_fix = self.source_file.read_text(encoding="utf-8")
             if not self._try_llm_fix(
                 error_type, error_output, cfg,
                 previous_attempts=previous_fix_attempts,
@@ -506,7 +506,7 @@ class EvaluationPipeline:
             ):
                 return False
             fix_content = self._extract_evolve_content(
-                self.source_file.read_text()
+                self.source_file.read_text(encoding="utf-8")
             )
             if fix_content in seen_fix_outputs:
                 logger.warning(
@@ -664,7 +664,7 @@ class EvaluationPipeline:
         if cfg.llm_judgment.enabled and (
             not cfg.llm_judgment.top_quartile_only or top_q
         ):
-            code = self.source_file.read_text()
+            code = self.source_file.read_text(encoding="utf-8")
             judgment = judge_code(
                 code=code,
                 api_base=cfg.api_base,

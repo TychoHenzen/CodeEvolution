@@ -142,7 +142,7 @@ def measure_release_binary_size(
 def measure_loc(program_path: Path) -> int:
     """Count non-empty, non-comment lines in the evolved file."""
     total = 0
-    for line in program_path.read_text().splitlines():
+    for line in program_path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("//"):
             total += 1

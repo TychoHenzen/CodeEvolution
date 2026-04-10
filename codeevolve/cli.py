@@ -135,7 +135,7 @@ def reinit(path: Path):
 
     config = load_config(config_path)
     rs_files = discover_rs_files(path, config.include_globs, config.exclude_globs)
-    marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text()]
+    marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text(encoding="utf-8")]
 
     if not marked_files:
         click.echo("Error: No files with EVOLVE-BLOCK markers found. Run 'codeevolve init' first.", err=True)
@@ -210,7 +210,7 @@ def run(config_path: Path):
     click.echo()
 
     rs_files = discover_rs_files(project_path, config.include_globs, config.exclude_globs)
-    marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text()]
+    marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text(encoding="utf-8")]
 
     if not marked_files:
         click.echo("Error: No files with EVOLVE-BLOCK markers found. Run 'codeevolve init' first.", err=True)

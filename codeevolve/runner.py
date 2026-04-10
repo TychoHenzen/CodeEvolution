@@ -284,8 +284,8 @@ def _run_single_file(
 
     # Save a backup of the original source before evolution starts.
     backup_path = output_dir / f"{initial_program.name}.backup"
-    original_code = initial_program.read_text()
-    backup_path.write_text(original_code)
+    original_code = initial_program.read_text(encoding="utf-8")
+    backup_path.write_text(original_code, encoding="utf-8")
     logger.info("Saved source backup to %s", backup_path)
 
     # Give OpenEvolve only the EVOLVE-BLOCK content so the LLM cannot
@@ -302,7 +302,7 @@ def _run_single_file(
         frozen_context = "\n\n".join(frozen_parts)
 
         evolve_program = output_dir / f"{initial_program.stem}_evolve_block.rs"
-        evolve_program.write_text(evolve_content)
+        evolve_program.write_text(evolve_content, encoding="utf-8")
         logger.info(
             "Stripped initial program to EVOLVE-BLOCK only (%d chars, frozen=%d chars)",
             len(evolve_content), len(frozen_context),
@@ -324,13 +324,13 @@ def _run_single_file(
     finally:
         # Restore the original source file so the project is never left
         # with a candidate's code after the run ends (success or crash).
-        initial_program.write_text(backup_path.read_text())
+        initial_program.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
         logger.info("Restored original source from backup")
 
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
     if result.best_code:
-        (best_dir / initial_program.name).write_text(result.best_code)
+        (best_dir / initial_program.name).write_text(result.best_code, encoding="utf-8")
 
     return result
 
@@ -356,7 +356,7 @@ def _run_multi_file(
         rel = f.relative_to(project_path)
         backup_name = rel.as_posix().replace("/", "__") + ".backup"
         backup_path = output_dir / backup_name
-        backup_path.write_text(f.read_text())
+        backup_path.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
         backups[f] = backup_path
     logger.info("Saved %d source backups", len(backups))
 
@@ -380,7 +380,7 @@ def _run_multi_file(
         logger.info("Created bundle (focus=%s)", focus_file.name)
 
     bundle_path = output_dir / "initial_bundle.rs"
-    bundle_path.write_text(bundle)
+    bundle_path.write_text(bundle, encoding="utf-8")
     logger.info("Bundle written (%d chars)", len(bundle))
 
     # For the bundle path, frozen context is not needed separately --
@@ -399,7 +399,7 @@ def _run_multi_file(
     finally:
         # Restore ALL original source files
         for f, backup in backups.items():
-            f.write_text(backup.read_text())
+            f.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
         logger.info("Restored %d source files from backups", len(backups))
 
     best_dir = output_dir / "best"
@@ -408,6 +408,6 @@ def _run_multi_file(
         # Extract focus content from bundle format if needed
         focus_content = extract_focus(result.best_code)
         best_content = focus_content if focus_content else result.best_code
-        (best_dir / focus_file.name).write_text(best_content)
+        (best_dir / focus_file.name).write_text(best_content, encoding="utf-8")
 
     return result
