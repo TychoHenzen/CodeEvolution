@@ -39,13 +39,13 @@ def test_init_no_cargo_toml(cli_runner, tmp_path):
 
 @patch("codeevolve.cli.generate_codeevolve_dir")
 @patch("codeevolve.cli.insert_evolve_markers")
-@patch("codeevolve.cli.scan_rs_files")
+@patch("codeevolve.cli.discover_rs_files")
 @patch("codeevolve.cli.find_cargo_toml")
-def test_init_success(mock_find, mock_scan, mock_markers, mock_generate, cli_runner, sample_crate):
+def test_init_success(mock_find, mock_discover, mock_markers, mock_generate, cli_runner, sample_crate):
     mock_find.return_value = sample_crate / "Cargo.toml"
-    mock_scan.return_value = [sample_crate / "src" / "lib.rs"]
+    mock_discover.return_value = [sample_crate / "src" / "lib.rs"]
     mock_generate.return_value = sample_crate / ".codeevolve"
-    result = cli_runner.invoke(main, ["init", "--path", str(sample_crate)], input="\nn\n")
+    result = cli_runner.invoke(main, ["init", "--path", str(sample_crate)])
     assert result.exit_code == 0
 
 

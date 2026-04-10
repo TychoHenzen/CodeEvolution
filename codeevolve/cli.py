@@ -27,7 +27,6 @@ from codeevolve.init_project import (
     generate_codeevolve_dir,
     insert_evolve_markers,
     regenerate_evaluator,
-    scan_rs_files,
 )
 from codeevolve.runner import validate_server, run_evolution
 from codeevolve.llama_server import LlamaServer
