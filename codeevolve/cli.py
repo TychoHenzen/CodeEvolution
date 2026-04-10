@@ -28,7 +28,8 @@ from codeevolve.init_project import (
     regenerate_evaluator,
     scan_rs_files,
 )
-from codeevolve.runner import validate_ollama, prime_ollama_models, run_evolution
+from codeevolve.runner import validate_server, run_evolution
+from codeevolve.llama_server import LlamaServer
 
 
 @click.group()
@@ -112,10 +113,8 @@ def init(path: Path):
 
     click.echo(f"\nSetup complete! Files created in {codeevolve_dir.relative_to(path)}/")
     click.echo("\nNext steps:")
-    click.echo("  1. Make sure Ollama is running:  ollama serve")
-    click.echo("  2. Pull models (first time):")
-    click.echo("       ollama pull qwen2.5-coder:7b-instruct-q4_K_M")
-    click.echo("       ollama pull qwen2.5-coder:1.5b-instruct-q4_K_M")
+    click.echo("  1. Download the model GGUF (if not already done)")
+    click.echo("  2. Update .codeevolve/evolution.yaml with paths to llama-server and the .gguf file")
     click.echo("  3. Start evolving:  codeevolve run")
 
 
@@ -173,15 +172,15 @@ def run(config_path: Path):
 
     click.echo(f"  Loading config from {config_path.relative_to(project_path.parent)}")
 
-    errors = validate_ollama(config)
-    if errors:
-        for e in errors:
-            click.echo(f"Error: {e}", err=True)
+    click.echo(f"  Starting llama-server ({config.llama_server.model_path})...")
+    try:
+        server = LlamaServer(config.llama_server)
+        server.start()
+    except (RuntimeError, TimeoutError) as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    click.echo(f"  Connected to Ollama ({config.ollama.mutator_model}, {config.ollama.evaluator_model})")
-    click.echo(f"  Loading models with num_ctx={config.evolution.context_window}...")
-    prime_ollama_models(config)
+    click.echo(f"  llama-server ready on port {config.llama_server.port}")
     click.echo(f"  Starting evolution ({config.evolution.max_iterations} iterations, population {config.evolution.population_size})")
     click.echo()
 
@@ -214,4 +213,5 @@ def run(config_path: Path):
         click.echo(f"  All candidates:  .codeevolve/output/")
     except KeyboardInterrupt:
         click.echo("\n\nStopped by user. Best result saved to .codeevolve/output/best/")
-        sys.exit(0)
+    finally:
+        server.stop()
