@@ -346,7 +346,8 @@ def _run_multi_file(
     """Multi-file evolution flow using bundles and summaries."""
     from openevolve.api import run_evolution as oe_run_evolution
     from codeevolve.summary import summarize_files
-    from codeevolve.bundler import create_bundle
+    from codeevolve.bundler import create_bundle, create_workspace_bundle
+    from codeevolve.crate_graph import detect_workspace
 
     # Backup ALL source files
     backups: dict[Path, Path] = {}
@@ -360,15 +361,24 @@ def _run_multi_file(
     summaries = summarize_files(source_files, project_path)
     logger.info("Generated summaries for %d files", len(summaries))
 
+    # Detect workspace for smart context scoping
+    workspace_info = detect_workspace(project_path)
+
     # Create bundle with first file as focus (v1: no rotation)
     focus_file = source_files[0]
-    bundle = create_bundle(focus_file, source_files, summaries, project_path)
+    if workspace_info is not None:
+        bundle = create_workspace_bundle(
+            focus_file, source_files, summaries, project_path,
+            workspace_info.crate_graph,
+        )
+        logger.info("Created workspace bundle (focus=%s)", focus_file.name)
+    else:
+        bundle = create_bundle(focus_file, source_files, summaries, project_path)
+        logger.info("Created bundle (focus=%s)", focus_file.name)
+
     bundle_path = output_dir / "initial_bundle.rs"
     bundle_path.write_text(bundle)
-    logger.info(
-        "Created initial bundle (%d chars, focus=%s)",
-        len(bundle), focus_file.name,
-    )
+    logger.info("Bundle written (%d chars)", len(bundle))
 
     # For the bundle path, frozen context is not needed separately --
     # the bundle's CONTEXT section provides read-only context to the LLM.
