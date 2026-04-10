@@ -62,17 +62,19 @@ def test_pipeline_test_failure_returns_zero(mock_build, mock_test, mock_fix, pip
     assert result.combined_score == 0.0
 
 
+@patch("codeevolve.evaluator.pipeline.judge_code")
 @patch("codeevolve.evaluator.pipeline.measure_binary_size")
 @patch("codeevolve.evaluator.pipeline.measure_compile_time")
 @patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
 @patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_full_pass(mock_build, mock_test, mock_clippy, mock_compile_time, mock_binary_size, pipeline, candidate_file):
+def test_pipeline_full_pass(mock_build, mock_test, mock_clippy, mock_compile_time, mock_binary_size, mock_judge, pipeline, candidate_file):
     mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
     mock_test.return_value = MagicMock(success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0)
     mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=0.5)
     mock_compile_time.return_value = 2.5
     mock_binary_size.return_value = 1_000_000
+    mock_judge.return_value = MagicMock(combined_score=0.7)
 
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is True

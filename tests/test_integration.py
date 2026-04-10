@@ -39,5 +39,5 @@ def test_full_init_flow(sample_crate: Path):
     import yaml
     with open(ce_dir / "evolution.yaml") as f:
         config = yaml.safe_load(f)
-    assert config["ollama"]["api_base"] == "http://localhost:11434/v1"
+    assert config["llama_server"]["port"] == 8080
     assert config["evolution"]["max_iterations"] == 500
