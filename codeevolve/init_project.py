@@ -34,13 +34,6 @@ def find_cargo_toml(project_path: Path) -> Path:
             f"No Cargo.toml found in {project_path}. "
             "Run this command from a Rust project directory, or use --path."
         )
-    content = cargo_toml.read_text()
-    if "[workspace]" in content:
-        raise ValueError(
-            f"Found a workspace Cargo.toml at {cargo_toml}. "
-            "CodeEvolution v1 supports single crates only. "
-            "Point --path at a specific member crate instead."
-        )
     return cargo_toml
 
 

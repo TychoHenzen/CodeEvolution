@@ -20,11 +20,12 @@ def test_find_cargo_toml_not_found(tmp_path: Path):
         find_cargo_toml(tmp_path)
 
 
-def test_find_cargo_toml_workspace_rejected(tmp_path: Path):
+def test_find_cargo_toml_workspace_accepted(tmp_path: Path):
+    """Workspace Cargo.toml is now accepted (workspace evolution is supported)."""
     cargo = tmp_path / "Cargo.toml"
     cargo.write_text('[workspace]\nmembers = ["crate_a"]')
-    with pytest.raises(ValueError, match="workspace"):
-        find_cargo_toml(tmp_path)
+    result = find_cargo_toml(tmp_path)
+    assert result == cargo
 
 
 def test_scan_rs_files(sample_crate: Path):
