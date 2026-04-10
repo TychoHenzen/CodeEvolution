@@ -346,13 +346,16 @@ def _run_multi_file(
     """Multi-file evolution flow using bundles and summaries."""
     from openevolve.api import run_evolution as oe_run_evolution
     from codeevolve.summary import summarize_files
-    from codeevolve.bundler import create_bundle, create_workspace_bundle
+    from codeevolve.bundler import create_bundle, create_workspace_bundle, extract_focus
     from codeevolve.crate_graph import detect_workspace
 
-    # Backup ALL source files
+    # Backup ALL source files (use relative path as name to avoid collisions
+    # when multiple crates have files with the same basename like lib.rs)
     backups: dict[Path, Path] = {}
     for f in source_files:
-        backup_path = output_dir / f"{f.name}.backup"
+        rel = f.relative_to(project_path)
+        backup_name = rel.as_posix().replace("/", "__") + ".backup"
+        backup_path = output_dir / backup_name
         backup_path.write_text(f.read_text())
         backups[f] = backup_path
     logger.info("Saved %d source backups", len(backups))
@@ -402,6 +405,9 @@ def _run_multi_file(
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
     if result.best_code:
-        (best_dir / focus_file.name).write_text(result.best_code)
+        # Extract focus content from bundle format if needed
+        focus_content = extract_focus(result.best_code)
+        best_content = focus_content if focus_content else result.best_code
+        (best_dir / focus_file.name).write_text(best_content)
 
     return result
