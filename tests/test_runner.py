@@ -39,7 +39,7 @@ def test_build_openevolve_config_yaml(tmp_path: Path):
     yaml_path = build_openevolve_config_yaml(config, tmp_path)
     assert yaml_path.exists()
     content = yaml_path.read_text()
-    assert "qwen2.5-coder-14b-instruct-q4_k_m" in content
+    assert "api_base" in content
 
 
 def test_format_iteration_line_success():

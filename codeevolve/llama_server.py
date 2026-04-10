@@ -29,7 +29,7 @@ class LlamaServer:
             "--cache-type-v", cfg.cache_type_v,
         ]
         if cfg.flash_attn:
-            args.append("--flash-attn")
+            args.extend(["--flash-attn", "on"])
         return args
 
     def start(self, timeout: float = 120) -> None:
