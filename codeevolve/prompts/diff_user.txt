@@ -1,0 +1,88 @@
+# Current Program Information
+- Fitness: {fitness_score}
+- Feature coordinates: {feature_coords}
+- Focus areas: {improvement_areas}
+
+{artifacts}
+
+# Program Evolution History
+{evolution_history}
+
+# Current Program
+```{language}
+{current_program}
+```
+
+# Task
+Suggest improvements to the program that will improve its FITNESS SCORE.
+The system maintains diversity across these dimensions: {feature_dimensions}
+Different solutions with similar fitness but different features are valuable.
+
+# CRITICAL RULES
+
+1. You MUST make at least one meaningful change. If your SEARCH and REPLACE
+   sections are identical, your submission is REJECTED and scores ZERO.
+2. Try something DIFFERENT from previous attempts shown in the history above.
+3. Consider: different algorithms, data structures, iterators, error handling,
+   trait implementations, or Rust idioms.
+
+# Output Format
+
+Use EXACTLY this diff format. No other format is accepted.
+
+FORMAT RULES:
+- Start search blocks with EXACTLY: <<<<<<< SEARCH
+- Separate search from replace with EXACTLY: =======
+- End replace blocks with EXACTLY: >>>>>>> REPLACE
+- Do NOT wrap code in markdown fences (no ```rust or ``` inside the blocks)
+- Do NOT use any other markers like #### SEARCH or #### REPLACE
+- The SEARCH section must match existing code EXACTLY (character-for-character)
+- The REPLACE section MUST differ from the SEARCH section
+- Keep changes small and targeted
+
+CORRECT example:
+
+<<<<<<< SEARCH
+fn add(a: i32, b: i32) -> i32 {{
+    a + b
+}}
+=======
+fn add(a: i32, b: i32) -> i32 {{
+    a.wrapping_add(b)
+}}
+>>>>>>> REPLACE
+
+WRONG (do NOT do this):
+
+#### SEARCH
+```rust
+fn add(a: i32, b: i32) -> i32 {{
+    a + b
+}}
+```
+#### REPLACE
+```rust
+fn add(a: i32, b: i32) -> i32 {{
+    a.wrapping_add(b)
+}}
+```
+
+Another CORRECT example with two changes:
+
+<<<<<<< SEARCH
+let mut result = Vec::new();
+=======
+let mut result = Vec::with_capacity(n);
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+for i in 0..n {{
+    result.push(items[i].clone());
+}}
+=======
+for item in items.iter().take(n) {{
+    result.push(item.clone());
+}}
+>>>>>>> REPLACE
+
+Now suggest improvements. Use ONLY the <<<<<<< SEARCH / ======= / >>>>>>> REPLACE format.

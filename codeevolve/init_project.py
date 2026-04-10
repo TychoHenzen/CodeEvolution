@@ -10,6 +10,22 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _DEFAULTS_DIR = Path(__file__).parent / "defaults"
 
 
+class _SingleQuotedStr(str):
+    """Marker type so yaml.dump uses single-quoted style (backslash-safe)."""
+
+
+class _ConfigDumper(yaml.Dumper):
+    """Custom YAML dumper that single-quotes _SingleQuotedStr values."""
+
+
+_ConfigDumper.add_representer(
+    _SingleQuotedStr,
+    lambda dumper, data: dumper.represent_scalar(
+        "tag:yaml.org,2002:str", str(data), style="'"
+    ),
+)
+
+
 def find_cargo_toml(project_path: Path) -> Path:
     """Find and validate Cargo.toml in the project directory."""
     cargo_toml = project_path / "Cargo.toml"
@@ -45,6 +61,29 @@ def insert_evolve_markers(rs_file: Path) -> None:
     rs_file.write_text(wrapped)
 
 
+def regenerate_evaluator(
+    project_path: Path,
+    config_path: Path,
+    source_file: Path,
+) -> None:
+    """Regenerate evaluator.py from the template without touching config or markers."""
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
+        keep_trailing_newline=True,
+    )
+    template = env.get_template("evaluator.py.j2")
+    codeevolve_package_path = str(Path(__file__).parent.parent.resolve())
+
+    evaluator_code = template.render(
+        project_name=project_path.name,
+        codeevolve_package_path=codeevolve_package_path.replace("\\", "/"),
+        config_path=str(config_path.resolve()).replace("\\", "/"),
+        project_path=str(project_path.resolve()).replace("\\", "/"),
+        source_file=str(source_file.resolve()).replace("\\", "/"),
+    )
+    (config_path.parent / "evaluator.py").write_text(evaluator_code)
+
+
 def generate_codeevolve_dir(
     project_path: Path,
     rs_files: list[Path],
@@ -62,26 +101,16 @@ def generate_codeevolve_dir(
     if custom_benchmark:
         config_data["benchmarks"]["custom_command"] = custom_benchmark
     if custom_benchmark_regex:
-        config_data["benchmarks"]["custom_command_score_regex"] = custom_benchmark_regex
+        config_data["benchmarks"]["custom_command_score_regex"] = _SingleQuotedStr(
+            custom_benchmark_regex
+        )
 
     config_path = codeevolve_dir / "evolution.yaml"
     with open(config_path, "w") as f:
-        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(config_data, f, Dumper=_ConfigDumper, default_flow_style=False, sort_keys=False)
 
     # --- Generate evaluator.py ---
-    env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
-        keep_trailing_newline=True,
-    )
-    template = env.get_template("evaluator.py.j2")
-    codeevolve_package_path = str(Path(__file__).parent.parent.resolve())
-
-    evaluator_code = template.render(
-        project_name=project_path.name,
-        codeevolve_package_path=codeevolve_package_path.replace("\\", "/"),
-        config_path=str(config_path.resolve()).replace("\\", "/"),
-    )
-    (codeevolve_dir / "evaluator.py").write_text(evaluator_code)
+    regenerate_evaluator(project_path, config_path, rs_files[0])
 
     # --- Generate README.md ---
     file_list = "\n".join(f"  - {f.relative_to(project_path)}" for f in rs_files)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import statistics
 from dataclasses import dataclass, field
 
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -16,8 +19,10 @@ class LlmJudgment:
 
 def build_judgment_prompt(code: str, dimensions: list[str]) -> str:
     """Build a prompt asking the LLM to judge code quality on given dimensions."""
-    dim_list = "\n".join(f"- **{d}**: score 1-5" for d in dimensions)
-    return f"""You are an expert Rust code reviewer. Evaluate the following code on each dimension using a 1-5 Likert scale (1=poor, 5=excellent).
+    dim_list = "\n".join(f"- **{d}**: a decimal number from 0.0 to 1.0" for d in dimensions)
+    return f"""You are an expert Rust code reviewer. Evaluate the following code on each dimension using a score from 0.0 to 1.0 (0.0=terrible, 0.5=average, 1.0=excellent).
+
+IMPORTANT: Scores MUST be fractional decimals, not integers. For example 0.65 or 0.82, never just 0 or 1.
 
 Think step by step about the code quality, then provide your scores as a JSON object.
 
@@ -31,7 +36,7 @@ Think step by step about the code quality, then provide your scores as a JSON ob
 
 Respond with your reasoning first, then a JSON code block containing only the dimension scores. Example:
 ```json
-{{{", ".join(f'"{d}": 3' for d in dimensions)}}}
+{{{", ".join(f'"{d}": 0.65' for d in dimensions)}}}
 ```"""
 
 
@@ -56,7 +61,7 @@ def parse_judgment_response(response: str, dimensions: list[str]) -> dict[str, f
         if dim in data:
             val = data[dim]
             if isinstance(val, (int, float)):
-                scores[dim] = max(1, min(5, int(val)))
+                scores[dim] = max(0.0, min(1.0, float(val)))
     return scores
 
 
@@ -81,9 +86,15 @@ def judge_code(
     """Run LLM judgment multiple times and aggregate via median."""
     prompt = build_judgment_prompt(code, dimensions)
     all_scores: dict[str, list[float]] = {d: [] for d in dimensions}
-    for _ in range(num_runs):
+    for run_idx in range(num_runs):
         response = _call_ollama(api_base, model, prompt)
         scores = parse_judgment_response(response, dimensions)
+        logger.info("LLM judge run %d/%d: %s", run_idx + 1, num_runs, scores)
+        if not scores:
+            logger.warning(
+                "LLM judge run %d: failed to parse scores from response (len=%d)",
+                run_idx + 1, len(response),
+            )
         for dim in dimensions:
             if dim in scores:
                 all_scores[dim].append(scores[dim])
@@ -93,6 +104,7 @@ def judge_code(
         if vals:
             dimension_medians[dim] = statistics.median(vals)
         else:
-            dimension_medians[dim] = 1.0
-    combined = statistics.mean(dimension_medians.values()) if dimension_medians else 1.0
+            dimension_medians[dim] = 0.0
+    combined = statistics.mean(dimension_medians.values()) if dimension_medians else 0.0
+    logger.info("LLM judge result: medians=%s, combined=%.2f", dimension_medians, combined)
     return LlmJudgment(dimension_scores=dimension_medians, combined_score=combined)

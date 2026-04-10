@@ -10,7 +10,7 @@ def test_load_default_config():
     config = load_config()
     assert config.ollama.api_base == "http://localhost:11434/v1"
     assert config.ollama.mutator_model == "qwen2.5-coder:7b-instruct-q4_K_M"
-    assert config.ollama.evaluator_model == "qwen2.5-coder:1.5b-instruct-q4_K_M"
+    assert config.ollama.evaluator_model == "qwen2.5-coder:7b-instruct-q4_K_M"
     assert config.evolution.max_iterations == 500
     assert config.fitness.static_analysis_weight == 0.35
 
@@ -53,6 +53,6 @@ def test_config_to_openevolve_dict():
     config = load_config()
     oe_dict = config.to_openevolve_dict()
     assert oe_dict["max_iterations"] == 500
-    assert oe_dict["diff_based_evolution"] is True
+    assert oe_dict["diff_based_evolution"] is False
     assert oe_dict["llm"]["api_base"] == "http://localhost:11434/v1"
     assert oe_dict["llm"]["models"][0]["name"] == "qwen2.5-coder:7b-instruct-q4_K_M"

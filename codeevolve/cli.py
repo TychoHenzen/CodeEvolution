@@ -5,14 +5,30 @@ from pathlib import Path
 
 import click
 
+# Force UTF-8 on stdout/stderr so OpenEvolve's Unicode log messages
+# (arrows, emojis) don't crash on Windows cp1252 consoles.
+# reconfigure() alone doesn't reliably stick on Windows .exe entry
+# points, so replace the streams entirely before any logging handler
+# captures a reference.  Skip when pytest captures streams.
+if sys.platform == "win32" and "pytest" not in sys.modules:
+    import io
+    for _attr in ("stdout", "stderr"):
+        _old = getattr(sys, _attr)
+        if hasattr(_old, "buffer"):
+            setattr(sys, _attr, io.TextIOWrapper(
+                _old.buffer, encoding="utf-8", errors="replace",
+                line_buffering=_old.line_buffering,
+            ))
+
 from codeevolve.config import load_config
 from codeevolve.init_project import (
     find_cargo_toml,
     generate_codeevolve_dir,
     insert_evolve_markers,
+    regenerate_evaluator,
     scan_rs_files,
 )
-from codeevolve.runner import validate_ollama, run_evolution
+from codeevolve.runner import validate_ollama, prime_ollama_models, run_evolution
 
 
 @click.group()
@@ -104,6 +120,35 @@ def init(path: Path):
 
 
 @main.command()
+@click.option("--path", type=click.Path(exists=True, path_type=Path), default=".", help="Path to Rust project (default: current directory)")
+def reinit(path: Path):
+    """Regenerate evaluator.py without interactive prompts.
+
+    Use this after updating codeevolve to pick up evaluator changes
+    without re-entering benchmark config or file selections.
+    """
+    path = path.resolve()
+    config_path = path / ".codeevolve" / "evolution.yaml"
+    if not config_path.exists():
+        click.echo("Error: .codeevolve/evolution.yaml not found. Run 'codeevolve init' first.", err=True)
+        sys.exit(1)
+
+    rs_files = scan_rs_files(path)
+    source_file = None
+    for f in rs_files:
+        if "EVOLVE-BLOCK-START" in f.read_text():
+            source_file = f
+            break
+
+    if not source_file:
+        click.echo("Error: No files with EVOLVE-BLOCK markers found. Run 'codeevolve init' first.", err=True)
+        sys.exit(1)
+
+    regenerate_evaluator(path, config_path, source_file)
+    click.echo(f"  Regenerated .codeevolve/evaluator.py")
+
+
+@main.command()
 @click.option("--config", "config_path", type=click.Path(exists=True, path_type=Path), default=".codeevolve/evolution.yaml", help="Path to config file")
 def run(config_path: Path):
     """Run the evolutionary optimizer.
@@ -135,6 +180,8 @@ def run(config_path: Path):
         sys.exit(1)
 
     click.echo(f"  Connected to Ollama ({config.ollama.mutator_model}, {config.ollama.evaluator_model})")
+    click.echo(f"  Loading models with num_ctx={config.evolution.context_window}...")
+    prime_ollama_models(config)
     click.echo(f"  Starting evolution ({config.evolution.max_iterations} iterations, population {config.evolution.population_size})")
     click.echo()
 
@@ -154,11 +201,16 @@ def run(config_path: Path):
         click.echo("Error: evaluator.py not found in .codeevolve/. Run 'codeevolve init' first.", err=True)
         sys.exit(1)
 
+    csv_path = config_path.parent / "output" / "metrics.csv"
+    click.echo(f"  Metrics CSV: {csv_path.relative_to(project_path)}")
+    click.echo()
+
     try:
         result = run_evolution(config_path, project_path, initial, evaluator_path)
         click.echo("\n-- Summary " + "-" * 45)
         click.echo(f"  Best score:      {result.best_score:.2f}")
         click.echo(f"  Best candidate:  .codeevolve/output/best/")
+        click.echo(f"  Metrics CSV:     .codeevolve/output/metrics.csv")
         click.echo(f"  All candidates:  .codeevolve/output/")
     except KeyboardInterrupt:
         click.echo("\n\nStopped by user. Best result saved to .codeevolve/output/best/")

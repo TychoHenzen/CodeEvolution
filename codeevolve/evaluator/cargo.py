@@ -136,12 +136,12 @@ def parse_clippy_json(raw_json: str) -> list[dict]:
         if item.get("reason") != "compiler-message":
             continue
         msg = item.get("message", {})
+        if msg.get("level") != "warning":
+            continue
         code_info = msg.get("code")
         if not code_info or not code_info.get("code"):
             continue
         code = code_info["code"]
-        if not code.startswith("clippy::"):
-            continue
         warnings.append({
             "code": code,
             "message": msg.get("message", ""),

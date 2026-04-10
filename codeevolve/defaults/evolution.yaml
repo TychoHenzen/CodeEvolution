@@ -4,15 +4,16 @@
 ollama:
   api_base: "http://localhost:11434/v1"
   mutator_model: "qwen2.5-coder:7b-instruct-q4_K_M"
-  evaluator_model: "qwen2.5-coder:1.5b-instruct-q4_K_M"
+  evaluator_model: "qwen2.5-coder:7b-instruct-q4_K_M"
 
 evolution:
   max_iterations: 500
   population_size: 100
   num_islands: 3
   migration_interval: 20
-  context_window: 4096
-  diff_based_evolution: true
+  context_window: 16384
+  diff_based_evolution: false
+  max_fix_attempts: 5  # LLM retry attempts on build/test failure
 
 rust:
   cargo_path: "cargo"
@@ -39,10 +40,12 @@ benchmarks:
 
 llm_judgment:
   enabled: true
-  top_quartile_only: true
+  top_quartile_only: false
   num_runs: 3
   dimensions:
     - readability
     - rust_idiomaticity
     - maintainability
     - design
+    - elegance
+    - clean code

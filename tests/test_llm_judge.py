@@ -18,28 +18,28 @@ def test_build_judgment_prompt():
     assert "readability" in prompt
     assert "rust_idiomaticity" in prompt
     assert "fn add" in prompt
-    assert "1-5" in prompt
+    assert "0.0 to 1.0" in prompt
 
 
 def test_parse_judgment_response_valid():
     response = json.dumps({
-        "readability": 4,
-        "rust_idiomaticity": 5,
-        "maintainability": 3,
-        "design": 4,
+        "readability": 0.8,
+        "rust_idiomaticity": 0.9,
+        "maintainability": 0.6,
+        "design": 0.75,
     })
     scores = parse_judgment_response(response, ["readability", "rust_idiomaticity", "maintainability", "design"])
-    assert scores == {"readability": 4, "rust_idiomaticity": 5, "maintainability": 3, "design": 4}
+    assert scores == {"readability": 0.8, "rust_idiomaticity": 0.9, "maintainability": 0.6, "design": 0.75}
 
 
 def test_parse_judgment_response_with_reasoning():
     response = """Here is my analysis...
 
 ```json
-{"readability": 4, "rust_idiomaticity": 3}
+{"readability": 0.8, "rust_idiomaticity": 0.6}
 ```"""
     scores = parse_judgment_response(response, ["readability", "rust_idiomaticity"])
-    assert scores == {"readability": 4, "rust_idiomaticity": 3}
+    assert scores == {"readability": 0.8, "rust_idiomaticity": 0.6}
 
 
 def test_parse_judgment_response_invalid():
@@ -50,17 +50,17 @@ def test_parse_judgment_response_invalid():
 def test_parse_judgment_response_clamps_scores():
     response = json.dumps({"readability": 10, "design": -1})
     scores = parse_judgment_response(response, ["readability", "design"])
-    assert scores["readability"] == 5
-    assert scores["design"] == 1
+    assert scores["readability"] == 1.0
+    assert scores["design"] == 0.0
 
 
 @patch("codeevolve.evaluator.llm_judge._call_ollama")
 def test_judge_code_aggregates_runs(mock_call):
     """judge_code runs N times and takes medians."""
     mock_call.side_effect = [
-        json.dumps({"readability": 3, "design": 4}),
-        json.dumps({"readability": 5, "design": 4}),
-        json.dumps({"readability": 4, "design": 2}),
+        json.dumps({"readability": 0.6, "design": 0.8}),
+        json.dumps({"readability": 0.9, "design": 0.8}),
+        json.dumps({"readability": 0.7, "design": 0.4}),
     ]
     result = judge_code(
         code="fn main() {}",
@@ -69,6 +69,6 @@ def test_judge_code_aggregates_runs(mock_call):
         dimensions=["readability", "design"],
         num_runs=3,
     )
-    assert result.dimension_scores["readability"] == 4  # median of [3,5,4]
-    assert result.dimension_scores["design"] == 4  # median of [4,4,2]
-    assert result.combined_score == 4.0  # mean of [4, 4]
+    assert result.dimension_scores["readability"] == 0.7  # median of [0.6, 0.9, 0.7]
+    assert result.dimension_scores["design"] == 0.8  # median of [0.8, 0.8, 0.4]
+    assert result.combined_score == 0.75  # mean of [0.7, 0.8]

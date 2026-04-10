@@ -1,30 +1,127 @@
 from __future__ import annotations
 
+import json
+import logging
+import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_llm_diffs(text: str) -> str:
+    """Rewrite common malformed diff formats into the canonical markers.
+
+    Small LLMs (e.g. Qwen-7B) frequently emit markdown-style diffs instead of
+    the ``<<<<<<< SEARCH`` / ``=======`` / ``>>>>>>> REPLACE`` format that
+    OpenEvolve expects.  This function rewrites the two most common variants
+    so that ``extract_diffs`` can parse them.
+
+    Handled variants
+    ----------------
+    1. ``#### SEARCH`` … ````rust`` code ```` … ``#### REPLACE`` … ````rust`` code ````
+    2. ``SEARCH`` / ``REPLACE`` as standalone lines with fenced code blocks
+    """
+    # Pattern: markdown headers with fenced code blocks
+    # e.g.  #### SEARCH\n```rust\ncode\n```\n\n#### REPLACE\n```rust\ncode\n```
+    md_pattern = re.compile(
+        r"#{1,6}\s*SEARCH\s*\n"       # #### SEARCH
+        r"```\w*\n"                    # ```rust  (opening fence)
+        r"(.*?)"                       # captured search body
+        r"\n```\s*\n+"                 # ``` (closing fence)
+        r"#{1,6}\s*REPLACE\s*\n"      # #### REPLACE
+        r"```\w*\n"                    # ```rust  (opening fence)
+        r"(.*?)"                       # captured replace body
+        r"\n```",                      # ``` (closing fence)
+        re.DOTALL,
+    )
+
+    def _rewrite(m: re.Match) -> str:
+        search_body = m.group(1)
+        replace_body = m.group(2)
+        return (
+            f"<<<<<<< SEARCH\n{search_body}\n=======\n{replace_body}\n>>>>>>> REPLACE"
+        )
+
+    return md_pattern.sub(_rewrite, text)
 
 import yaml
-from openai import OpenAI
 
 from codeevolve.config import CodeEvolveConfig, load_config
 
 
+def _ollama_base_url(api_base: str) -> str:
+    """Derive the Ollama root URL from the configured api_base.
+
+    Strips the ``/v1`` suffix so we can hit native endpoints like ``/api/tags``.
+    """
+    return api_base.rstrip("/").removesuffix("/v1")
+
+
 def validate_ollama(config: CodeEvolveConfig) -> list[str]:
     """Check that Ollama is reachable and required models are available."""
+    base = _ollama_base_url(config.ollama.api_base)
     errors = []
     try:
-        client = OpenAI(base_url=config.ollama.api_base, api_key="ollama")
-        models_response = client.models.list()
-        available = {m.id for m in models_response.data}
+        resp = urlopen(f"{base}/api/tags", timeout=10)
+        data = json.loads(resp.read())
+        available = {m["name"] for m in data.get("models", [])}
+        missing = []
         for model_name in [config.ollama.mutator_model, config.ollama.evaluator_model]:
             if model_name not in available:
+                missing.append(model_name)
+        if missing:
+            for model_name in missing:
                 errors.append(
                     f"Model '{model_name}' not found in Ollama. "
                     f"Pull it with: ollama pull {model_name}"
                 )
-    except Exception as e:
-        errors.append(f"Cannot connect to Ollama at {config.ollama.api_base}: {e}")
+            if available:
+                errors.append(
+                    f"Available models at {base}: "
+                    + ", ".join(sorted(available))
+                )
+            else:
+                errors.append(
+                    f"No models found at {base}. "
+                    "Is Ollama running with models pulled?"
+                )
+    except (URLError, OSError) as e:
+        errors.append(f"Cannot connect to Ollama at {base}: {e}")
     return errors
+
+
+def prime_ollama_models(config: CodeEvolveConfig) -> None:
+    """Load Ollama models with the configured context size.
+
+    Ollama defaults to 32K context which wastes VRAM on KV cache.
+    Sending a request with num_ctx forces a reload at the right size,
+    freeing VRAM for model layers so more runs on GPU.
+    """
+    base = _ollama_base_url(config.ollama.api_base)
+    num_ctx = config.evolution.context_window
+
+    for model_name in [config.ollama.mutator_model, config.ollama.evaluator_model]:
+        payload = json.dumps({
+            "model": model_name,
+            "prompt": "",
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": "10m",
+        }).encode()
+        try:
+            req = Request(
+                f"{base}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urlopen(req, timeout=60)
+            # Read the full streaming response to completion
+            resp.read()
+            logger.info("Loaded %s with num_ctx=%d", model_name, num_ctx)
+        except (URLError, OSError) as e:
+            logger.warning("Failed to prime %s: %s", model_name, e)
 
 
 def build_openevolve_config_yaml(config: CodeEvolveConfig, output_dir: Path) -> Path:
@@ -113,6 +210,24 @@ def format_iteration_line(
     return "\n".join(lines)
 
 
+def _patch_extract_diffs() -> None:
+    """Monkey-patch OpenEvolve's extract_diffs to normalise markdown diffs."""
+    from openevolve.utils import code_utils
+
+    _original = code_utils.extract_diffs
+
+    def _patched(diff_text: str, diff_pattern: str = r"<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE") -> List[Tuple[str, str]]:
+        # Try the original pattern first.
+        result = _original(diff_text, diff_pattern)
+        if result:
+            return result
+        # Normalise markdown-style diffs and retry.
+        normalised = _normalize_llm_diffs(diff_text)
+        return _original(normalised, diff_pattern)
+
+    code_utils.extract_diffs = _patched
+
+
 def run_evolution(
     config_path: Path,
     project_path: Path,
@@ -122,21 +237,36 @@ def run_evolution(
     """Run the evolutionary loop via OpenEvolve. Returns EvolutionResult."""
     from openevolve.api import run_evolution as oe_run_evolution
 
+    _patch_extract_diffs()
+
     config = load_config(config_path)
 
     output_dir = project_path / ".codeevolve" / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Save a backup of the original source before evolution starts.
+    # The evaluator overwrites the source file during each evaluation;
+    # this backup ensures we can always restore even after a crash.
+    backup_path = output_dir / f"{initial_program.name}.backup"
+    backup_path.write_text(initial_program.read_text())
+    logger.info("Saved source backup to %s", backup_path)
+
     oe_config_path = build_openevolve_config_yaml(config, output_dir)
 
-    result = oe_run_evolution(
-        initial_program=str(initial_program),
-        evaluator=str(evaluator_path),
-        config=str(oe_config_path),
-        iterations=config.evolution.max_iterations,
-        output_dir=str(output_dir),
-        cleanup=False,
-    )
+    try:
+        result = oe_run_evolution(
+            initial_program=str(initial_program),
+            evaluator=str(evaluator_path),
+            config=str(oe_config_path),
+            iterations=config.evolution.max_iterations,
+            output_dir=str(output_dir),
+            cleanup=False,
+        )
+    finally:
+        # Restore the original source file so the project is never left
+        # with a candidate's code after the run ends (success or crash).
+        initial_program.write_text(backup_path.read_text())
+        logger.info("Restored original source from backup")
 
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
