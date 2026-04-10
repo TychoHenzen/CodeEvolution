@@ -79,6 +79,7 @@ from codeevolve.evaluator.benchmark import (
     measure_binary_size,
     measure_compile_time,
     measure_loc,
+    measure_release_binary_size,
     run_user_benchmark,
 )
 from codeevolve.evaluator.llm_judge import judge_code
@@ -137,10 +138,24 @@ class EvaluationResult:
 class EvaluationPipeline:
     """4-layer gated evaluation pipeline for Rust code."""
 
-    def __init__(self, config: CodeEvolveConfig, project_path: Path, source_file: Path):
+    def __init__(
+        self,
+        config: CodeEvolveConfig,
+        project_path: Path,
+        source_file: Optional[Path] = None,
+        *,
+        focus_file: Optional[Path] = None,
+        all_source_files: Optional[list[Path]] = None,
+    ):
         self.config = config
         self.project_path = project_path
-        self.source_file = source_file
+        # Accept either source_file (legacy) or focus_file (workspace mode).
+        # At least one must be provided.
+        resolved = focus_file or source_file
+        if resolved is None:
+            raise ValueError("Either source_file or focus_file must be provided")
+        self.focus_file: Path = resolved
+        self.all_source_files: list[Path] = all_source_files or [self.focus_file]
         self._score_history: list[float] = []
         self._baseline_loc: Optional[int] = None
         self._baseline_compile_time: Optional[float] = None
@@ -158,6 +173,15 @@ class EvaluationPipeline:
         self._test_context: Optional[str] = None
         self._frozen_context: Optional[str] = None
 
+    @property
+    def source_file(self) -> Path:
+        """Backward-compatible alias for focus_file."""
+        return self.focus_file
+
+    @source_file.setter
+    def source_file(self, value: Path) -> None:
+        self.focus_file = value
+
     def _is_top_quartile(self, pre_llm_score: float) -> bool:
         if len(self._score_history) < 4:
             return False
@@ -170,21 +194,43 @@ class EvaluationPipeline:
         normalised = code.strip()
         return hashlib.sha256(normalised.encode()).hexdigest()
 
+    def _find_crate_root(self) -> Path:
+        """Find the crate root for the focus file.
+
+        Walks up from the focus file's directory looking for a Cargo.toml.
+        Falls back to project_path if none is found.
+        """
+        current = self.focus_file.parent
+        while current != current.parent:
+            if (current / "Cargo.toml").exists():
+                return current
+            if current == self.project_path:
+                break
+            current = current.parent
+        return self.project_path
+
     def _collect_test_sources(self) -> dict[str, str]:
-        """Collect test source files from src/tests.rs, tests/, and inline modules."""
+        """Collect test source files from the focus file's crate.
+
+        Looks for tests relative to the focus file's parent crate (not just
+        project_path), which is important for workspace-level evolution where
+        multiple crates exist.
+        """
         sources: dict[str, str] = {}
 
-        tests_rs = self.project_path / "src" / "tests.rs"
+        crate_root = self._find_crate_root()
+
+        tests_rs = crate_root / "src" / "tests.rs"
         if tests_rs.exists():
             sources[tests_rs.name] = tests_rs.read_text()
 
-        tests_dir = self.project_path / "tests"
+        tests_dir = crate_root / "tests"
         if tests_dir.is_dir():
             for tf in sorted(tests_dir.glob("*.rs")):
                 sources[f"tests/{tf.name}"] = tf.read_text()
 
         if self._evolve_suffix and "#[cfg(test)]" in self._evolve_suffix:
-            sources[f"inline ({self.source_file.name})"] = self._evolve_suffix
+            sources[f"inline ({self.focus_file.name})"] = self._evolve_suffix
 
         return sources
 
@@ -318,19 +364,26 @@ class EvaluationPipeline:
         # No markers found - use entire candidate as evolve content
         return candidate_code
 
+    @staticmethod
+    def _is_bundle(text: str) -> bool:
+        """Check whether the candidate text looks like a multi-file bundle."""
+        return "// === FOCUS: " in text and "// === END FOCUS ===" in text
+
     def evaluate(self, program_path: str) -> EvaluationResult:
         """Run the full 4-layer evaluation pipeline on a candidate program.
 
         OpenEvolve passes a temp file path containing the candidate code.
-        We extract only the EVOLVE-BLOCK content and splice it into the
-        original file structure, preserving everything outside the markers.
+        The candidate may be either:
+        - A single file (legacy mode): extract EVOLVE-BLOCK content and splice
+        - A bundle (workspace mode): extract the focus file content from the
+          bundle, then splice into the actual focus file on disk.
 
         Before running the expensive cargo pipeline, we check whether the
         candidate is identical to the original source or a previously-seen
         candidate.  Duplicates are rejected immediately with score 0.
         """
         # Save the original source so we can restore it after evaluation
-        original_code = self.source_file.read_text()
+        original_code = self.focus_file.read_text()
 
         # Lazily capture the original file structure (prefix/suffix around
         # EVOLVE-BLOCK content) so we can enforce marker boundaries.
@@ -346,7 +399,7 @@ class EvaluationPipeline:
                 # No markers - treat entire file as evolvable (legacy mode)
                 logger.warning(
                     "No EVOLVE-BLOCK markers found in %s - entire file is evolvable",
-                    self.source_file.name,
+                    self.focus_file.name,
                 )
 
         # Lazily capture the hash of the very first (original) program so we
@@ -357,7 +410,22 @@ class EvaluationPipeline:
 
         # Read candidate and extract the evolve content
         raw_candidate = Path(program_path).read_text()
-        evolve_content = self._extract_evolve_content(raw_candidate)
+
+        # If the candidate is a bundle, extract just the focus file content.
+        # Otherwise, fall back to single-file behavior.
+        if self._is_bundle(raw_candidate):
+            from codeevolve.bundler import extract_focus
+            focus_content = extract_focus(raw_candidate)
+            if not focus_content:
+                logger.warning("Bundle detected but focus extraction returned empty")
+                return EvaluationResult(
+                    passed_gates=False,
+                    combined_score=0.0,
+                    error="bundle: empty focus extraction",
+                )
+            evolve_content = self._extract_evolve_content(focus_content)
+        else:
+            evolve_content = self._extract_evolve_content(raw_candidate)
 
         # Splice into original structure if we have markers
         if self._evolve_prefix is not None:
@@ -365,7 +433,7 @@ class EvaluationPipeline:
                 self._evolve_prefix, evolve_content, self._evolve_suffix
             )
         else:
-            candidate_code = raw_candidate
+            candidate_code = raw_candidate if not self._is_bundle(raw_candidate) else evolve_content
 
         candidate_hash = self._code_hash(candidate_code)
 
@@ -399,13 +467,13 @@ class EvaluationPipeline:
         self._seen_hashes.add(candidate_hash)
 
         # Write spliced code into the actual source file
-        self.source_file.write_text(candidate_code)
+        self.focus_file.write_text(candidate_code)
 
         try:
             return self._evaluate_candidate()
         finally:
             # Always restore the original source file
-            self.source_file.write_text(original_code)
+            self.focus_file.write_text(original_code)
 
     def _evaluate_candidate(self) -> EvaluationResult:
         """Run the 4-layer pipeline on the candidate already written to disk."""
@@ -514,14 +582,24 @@ class EvaluationPipeline:
         # --- Layer 3: Performance ---
         compile_time = 0.0
         binary_size = 0
-        loc = measure_loc(self.source_file)
+        loc = measure_loc(self.focus_file)
         bench_score: Optional[float] = None
 
         if cfg.benchmarks.measure_compile_time:
             compile_time = measure_compile_time(project_path, cargo)
 
         if cfg.benchmarks.measure_binary_size:
-            binary_size = measure_binary_size(project_path, cfg.rust.target_dir)
+            if cfg.benchmarks.binary_package:
+                binary_size = measure_release_binary_size(
+                    project_path,
+                    cfg.benchmarks.binary_package,
+                    cargo_path=cargo,
+                    target_dir=cfg.rust.target_dir,
+                    upx_path=cfg.benchmarks.upx_path,
+                    upx_args=cfg.benchmarks.upx_args,
+                )
+            else:
+                binary_size = measure_binary_size(project_path, cfg.rust.target_dir)
 
         if cfg.benchmarks.custom_command:
             bench_result = run_user_benchmark(
