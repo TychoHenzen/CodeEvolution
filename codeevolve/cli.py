@@ -21,6 +21,7 @@ if sys.platform == "win32" and "pytest" not in sys.modules:
             ))
 
 from codeevolve.config import load_config
+from codeevolve.file_discovery import discover_rs_files
 from codeevolve.init_project import (
     find_cargo_toml,
     generate_codeevolve_dir,
@@ -56,8 +57,9 @@ def main():
 def init(path: Path):
     """Set up a Rust project for evolutionary optimization.
 
-    Scans your project for Rust source files, marks them for evolution,
-    and generates configuration files in a .codeevolve/ directory.
+    Scans your project for Rust source files using glob patterns, marks
+    them for evolution, and generates configuration files in a .codeevolve/
+    directory.
     """
     path = path.resolve()
 
@@ -67,57 +69,31 @@ def init(path: Path):
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    rs_files = scan_rs_files(path)
+    # Load default config to get include/exclude globs
+    defaults = load_config()
+    rs_files = discover_rs_files(path, defaults.include_globs, defaults.exclude_globs)
     if not rs_files:
-        click.echo("Error: No .rs files found in src/", err=True)
+        click.echo("Error: No .rs files matched include globs", err=True)
         sys.exit(1)
 
-    click.echo("\nFound Rust source files:")
-    for i, f in enumerate(rs_files, 1):
-        click.echo(f"  {i}. {f.relative_to(path)}")
-
-    click.echo(f"\nWhich files should be evolved? (comma-separated numbers, or Enter for all)")
-    selection = click.prompt("Selection", default="", show_default=False)
-
-    if selection.strip():
-        indices = [int(x.strip()) - 1 for x in selection.split(",")]
-        selected = [rs_files[i] for i in indices if 0 <= i < len(rs_files)]
-    else:
-        selected = rs_files
-
-    if not selected:
-        click.echo("Error: No files selected", err=True)
-        sys.exit(1)
-
-    custom_benchmark = None
-    custom_regex = None
-    click.echo("\nBy default, the optimizer measures compile time, binary size, and lines of code.")
-    if click.confirm("Do you also want to measure runtime performance? (requires a benchmark command like 'cargo bench')", default=False):
-        custom_benchmark = click.prompt("Benchmark command")
-        custom_regex = click.prompt(
-            "Regex to extract score from output (or Enter to use exit code)",
-            default="",
-            show_default=False,
-        )
-        custom_regex = custom_regex if custom_regex else None
+    click.echo(f"\nDiscovered {len(rs_files)} Rust source file(s):")
+    for f in rs_files:
+        click.echo(f"  - {f.relative_to(path)}")
 
     click.echo("\nMarking files for evolution...")
-    for f in selected:
+    for f in rs_files:
         insert_evolve_markers(f)
         click.echo(f"  Marked: {f.relative_to(path)}")
 
     codeevolve_dir = generate_codeevolve_dir(
         project_path=path,
-        rs_files=selected,
-        custom_benchmark=custom_benchmark,
-        custom_benchmark_regex=custom_regex,
+        rs_files=rs_files,
     )
 
     click.echo(f"\nSetup complete! Files created in {codeevolve_dir.relative_to(path)}/")
     click.echo("\nNext steps:")
-    click.echo("  1. Download the model GGUF (if not already done)")
-    click.echo("  2. Update .codeevolve/evolution.yaml with paths to llama-server and the .gguf file")
-    click.echo("  3. Start evolving:  codeevolve run")
+    click.echo("  1. Edit .codeevolve/evolution.yaml (set include/exclude globs, provider, etc.)")
+    click.echo("  2. Start evolving:  codeevolve run")
 
 
 @main.command()
@@ -134,19 +110,20 @@ def reinit(path: Path):
         click.echo("Error: .codeevolve/evolution.yaml not found. Run 'codeevolve init' first.", err=True)
         sys.exit(1)
 
-    rs_files = scan_rs_files(path)
-    source_file = None
-    for f in rs_files:
-        if "EVOLVE-BLOCK-START" in f.read_text():
-            source_file = f
-            break
+    config = load_config(config_path)
+    rs_files = discover_rs_files(path, config.include_globs, config.exclude_globs)
+    marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text()]
 
-    if not source_file:
+    if not marked_files:
         click.echo("Error: No files with EVOLVE-BLOCK markers found. Run 'codeevolve init' first.", err=True)
         sys.exit(1)
 
-    regenerate_evaluator(path, config_path, source_file)
-    click.echo(f"  Regenerated .codeevolve/evaluator.py")
+    regenerate_evaluator(
+        path, config_path,
+        source_files=marked_files,
+        focus_file=marked_files[0],
+    )
+    click.echo(f"  Regenerated .codeevolve/evaluator.py ({len(marked_files)} source file(s))")
 
 
 @main.command()
@@ -209,16 +186,14 @@ def run(config_path: Path):
     click.echo(f"  Starting evolution ({config.evolution.max_iterations} iterations, population {config.evolution.population_size})")
     click.echo()
 
-    rs_files = scan_rs_files(project_path)
-    initial = None
-    for f in rs_files:
-        if "EVOLVE-BLOCK-START" in f.read_text():
-            initial = f
-            break
+    rs_files = discover_rs_files(project_path, config.include_globs, config.exclude_globs)
+    marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text()]
 
-    if not initial:
+    if not marked_files:
         click.echo("Error: No files with EVOLVE-BLOCK markers found. Run 'codeevolve init' first.", err=True)
         sys.exit(1)
+
+    click.echo(f"  Source files: {len(marked_files)} with EVOLVE-BLOCK markers")
 
     evaluator_path = config_path.parent / "evaluator.py"
     if not evaluator_path.exists():
@@ -230,7 +205,7 @@ def run(config_path: Path):
     click.echo()
 
     try:
-        result = run_evolution(config_path, project_path, initial, evaluator_path)
+        result = run_evolution(config_path, project_path, marked_files, evaluator_path)
         click.echo("\n-- Summary " + "-" * 45)
         click.echo(f"  Best score:      {result.best_score:.2f}")
         click.echo(f"  Best candidate:  .codeevolve/output/best/")

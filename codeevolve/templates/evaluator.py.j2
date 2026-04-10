@@ -26,9 +26,18 @@ from codeevolve.evaluator.pipeline import EvaluationPipeline
 
 _CONFIG_PATH = Path("{{ config_path }}")
 _PROJECT_PATH = Path("{{ project_path }}")
-_SOURCE_FILE = Path("{{ source_file }}")
+_SOURCE_FILES = [
+{% for f in source_files %}
+    Path("{{ f }}"),
+{% endfor %}
+]
+_FOCUS_FILE = Path("{{ focus_file }}")
 _config = load_config(_CONFIG_PATH)
-_pipeline = EvaluationPipeline(_config, _PROJECT_PATH, _SOURCE_FILE)
+_pipeline = EvaluationPipeline(
+    _config, _PROJECT_PATH,
+    focus_file=_FOCUS_FILE,
+    all_source_files=_SOURCE_FILES,
+)
 
 _CSV_PATH = _CONFIG_PATH.parent / "output" / "metrics.csv"
 _CSV_FIELDS = [

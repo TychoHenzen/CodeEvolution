@@ -225,10 +225,21 @@ def _patch_extract_diffs() -> None:
 def run_evolution(
     config_path: Path,
     project_path: Path,
-    initial_program: Path,
+    source_files: Path | list[Path],
     evaluator_path: Path,
 ):
-    """Run the evolutionary loop via OpenEvolve. Returns EvolutionResult."""
+    """Run the evolutionary loop via OpenEvolve. Returns EvolutionResult.
+
+    Args:
+        config_path: Path to evolution.yaml.
+        project_path: Root of the Rust project.
+        source_files: A single Path (legacy) or list of Paths with EVOLVE-BLOCK
+            markers. When a single file is given, the existing single-file flow
+            is used for backward compatibility. When multiple files are given,
+            summaries are generated and a bundle is created with the first file
+            as focus.
+        evaluator_path: Path to the generated evaluator.py.
+    """
     from openevolve.api import run_evolution as oe_run_evolution
     from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
 
@@ -241,9 +252,37 @@ def run_evolution(
     output_dir = project_path / ".codeevolve" / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Normalize to list
+    if isinstance(source_files, Path):
+        source_files = [source_files]
+
+    # ---- Single-file backward-compatible path ----
+    if len(source_files) == 1:
+        return _run_single_file(
+            config, config_path, project_path, source_files[0],
+            evaluator_path, output_dir,
+        )
+
+    # ---- Multi-file bundle path ----
+    return _run_multi_file(
+        config, config_path, project_path, source_files,
+        evaluator_path, output_dir,
+    )
+
+
+def _run_single_file(
+    config: CodeEvolveConfig,
+    config_path: Path,
+    project_path: Path,
+    initial_program: Path,
+    evaluator_path: Path,
+    output_dir: Path,
+):
+    """Single-file evolution flow (backward compatible)."""
+    from openevolve.api import run_evolution as oe_run_evolution
+    from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
+
     # Save a backup of the original source before evolution starts.
-    # The evaluator overwrites the source file during each evaluation;
-    # this backup ensures we can always restore even after a crash.
     backup_path = output_dir / f"{initial_program.name}.backup"
     original_code = initial_program.read_text()
     backup_path.write_text(original_code)
@@ -292,5 +331,67 @@ def run_evolution(
     best_dir.mkdir(exist_ok=True)
     if result.best_code:
         (best_dir / initial_program.name).write_text(result.best_code)
+
+    return result
+
+
+def _run_multi_file(
+    config: CodeEvolveConfig,
+    config_path: Path,
+    project_path: Path,
+    source_files: list[Path],
+    evaluator_path: Path,
+    output_dir: Path,
+):
+    """Multi-file evolution flow using bundles and summaries."""
+    from openevolve.api import run_evolution as oe_run_evolution
+    from codeevolve.summary import summarize_files
+    from codeevolve.bundler import create_bundle
+
+    # Backup ALL source files
+    backups: dict[Path, Path] = {}
+    for f in source_files:
+        backup_path = output_dir / f"{f.name}.backup"
+        backup_path.write_text(f.read_text())
+        backups[f] = backup_path
+    logger.info("Saved %d source backups", len(backups))
+
+    # Generate summaries of all files for context
+    summaries = summarize_files(source_files, project_path)
+    logger.info("Generated summaries for %d files", len(summaries))
+
+    # Create bundle with first file as focus (v1: no rotation)
+    focus_file = source_files[0]
+    bundle = create_bundle(focus_file, source_files, summaries, project_path)
+    bundle_path = output_dir / "initial_bundle.rs"
+    bundle_path.write_text(bundle)
+    logger.info(
+        "Created initial bundle (%d chars, focus=%s)",
+        len(bundle), focus_file.name,
+    )
+
+    # For the bundle path, frozen context is not needed separately --
+    # the bundle's CONTEXT section provides read-only context to the LLM.
+    oe_config_path = build_openevolve_config_yaml(config, output_dir, frozen_context="")
+
+    try:
+        result = oe_run_evolution(
+            initial_program=str(bundle_path),
+            evaluator=str(evaluator_path),
+            config=str(oe_config_path),
+            iterations=config.evolution.max_iterations,
+            output_dir=str(output_dir),
+            cleanup=False,
+        )
+    finally:
+        # Restore ALL original source files
+        for f, backup in backups.items():
+            f.write_text(backup.read_text())
+        logger.info("Restored %d source files from backups", len(backups))
+
+    best_dir = output_dir / "best"
+    best_dir.mkdir(exist_ok=True)
+    if result.best_code:
+        (best_dir / focus_file.name).write_text(result.best_code)
 
     return result
