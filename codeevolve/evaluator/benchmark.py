@@ -20,13 +20,13 @@ class BenchmarkResult:
 
 
 def measure_compile_time(
-    project_path: Path, cargo_path: str = "cargo", runs: int = 3,
+    project_path: Path, cargo_path: str = "cargo", runs: int = 1,
 ) -> float:
-    """Clean-build the project multiple times and return median wall-clock seconds.
+    """Clean-build the project and return wall-clock seconds.
 
-    A single cargo build varies 10-20% between runs due to I/O, caching, and
-    background OS activity.  Taking the median of *runs* builds filters that
-    noise so only real code-level changes move the score.
+    A single clean build is sufficient for comparing candidates — the noise
+    between runs (~10-20%) is small relative to algorithmic code changes,
+    and each extra run costs a full cargo clean + build cycle (~30s).
     """
     times: list[float] = []
     for i in range(runs):
@@ -39,12 +39,9 @@ def measure_compile_time(
         )
         elapsed = time.monotonic() - start
         times.append(elapsed)
-    median = statistics.median(times)
-    logger.info(
-        "compile_time: runs=%s, median=%.2fs",
-        ["%.2f" % t for t in times], median,
-    )
-    return median
+    result = statistics.median(times) if len(times) > 1 else times[0]
+    logger.info("compile_time: runs=%s, result=%.2fs", ["%.2f" % t for t in times], result)
+    return result
 
 
 def measure_binary_size(project_path: Path, target_dir: Optional[str] = None) -> int:

@@ -69,9 +69,11 @@ def validate_server(config: CodeEvolveConfig) -> list[str]:
     return errors
 
 
-def build_openevolve_config_yaml(config: CodeEvolveConfig, output_dir: Path) -> Path:
+def build_openevolve_config_yaml(
+    config: CodeEvolveConfig, output_dir: Path, frozen_context: str = "",
+) -> Path:
     """Write an OpenEvolve-compatible config YAML and return its path."""
-    oe_dict = config.to_openevolve_dict()
+    oe_dict = config.to_openevolve_dict(frozen_context=frozen_context)
     yaml_path = output_dir / "openevolve_config.yaml"
     with open(yaml_path, "w") as f:
         yaml.dump(oe_dict, f, default_flow_style=False, sort_keys=False)
@@ -155,6 +157,28 @@ def format_iteration_line(
     return "\n".join(lines)
 
 
+def _patch_feature_dimension_defaults() -> None:
+    """Ensure feature dimension metrics always exist, even on timeout.
+
+    OpenEvolve replaces metrics with ``{error, timeout}`` when an evaluation
+    times out.  If the configured feature_dimensions reference evaluator
+    metrics (e.g. ``llm_score``), the database crashes with ValueError.
+    This patch injects 0.0 defaults for any missing feature dimensions
+    before the coordinate calculation runs.
+    """
+    from openevolve import database as db_mod
+
+    _original = db_mod.ProgramDatabase._calculate_feature_coords
+
+    def _safe_feature_coords(self, program):
+        for dim in self.config.feature_dimensions:
+            if dim not in ("complexity", "diversity", "score"):
+                program.metrics.setdefault(dim, 0.0)
+        return _original(self, program)
+
+    db_mod.ProgramDatabase._calculate_feature_coords = _safe_feature_coords
+
+
 def _patch_extract_diffs() -> None:
     """Monkey-patch OpenEvolve's extract_diffs to normalise markdown diffs."""
     from openevolve.utils import code_utils
@@ -181,8 +205,10 @@ def run_evolution(
 ):
     """Run the evolutionary loop via OpenEvolve. Returns EvolutionResult."""
     from openevolve.api import run_evolution as oe_run_evolution
+    from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
 
     _patch_extract_diffs()
+    _patch_feature_dimension_defaults()
 
     config = load_config(config_path)
 
@@ -193,14 +219,37 @@ def run_evolution(
     # The evaluator overwrites the source file during each evaluation;
     # this backup ensures we can always restore even after a crash.
     backup_path = output_dir / f"{initial_program.name}.backup"
-    backup_path.write_text(initial_program.read_text())
+    original_code = initial_program.read_text()
+    backup_path.write_text(original_code)
     logger.info("Saved source backup to %s", backup_path)
 
-    oe_config_path = build_openevolve_config_yaml(config, output_dir)
+    # Give OpenEvolve only the EVOLVE-BLOCK content so the LLM cannot
+    # duplicate struct definitions, imports, or test modules that live
+    # outside the evolvable region.
+    frozen_context = ""
+    evolve_program = initial_program
+    parsed = parse_evolve_block(original_code)
+    if parsed:
+        prefix, evolve_content, suffix = parsed
+        frozen_prefix = prefix.replace(_MARKER_START + "\n", "").strip()
+        frozen_suffix = suffix.replace(_MARKER_END, "").strip()
+        frozen_parts = [p for p in [frozen_prefix, frozen_suffix] if p]
+        frozen_context = "\n\n".join(frozen_parts)
+
+        evolve_program = output_dir / f"{initial_program.stem}_evolve_block.rs"
+        evolve_program.write_text(evolve_content)
+        logger.info(
+            "Stripped initial program to EVOLVE-BLOCK only (%d chars, frozen=%d chars)",
+            len(evolve_content), len(frozen_context),
+        )
+
+    oe_config_path = build_openevolve_config_yaml(
+        config, output_dir, frozen_context=frozen_context,
+    )
 
     try:
         result = oe_run_evolution(
-            initial_program=str(initial_program),
+            initial_program=str(evolve_program),
             evaluator=str(evaluator_path),
             config=str(oe_config_path),
             iterations=config.evolution.max_iterations,

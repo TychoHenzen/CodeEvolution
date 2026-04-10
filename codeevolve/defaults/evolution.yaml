@@ -6,7 +6,7 @@ llama_server:
   model_path: "D:/Ollama/llama.cpp models/qwen2.5-coder-14b-instruct-abliterated-q4_k_m.gguf"
   port: 8080
   gpu_layers: 30
-  context_size: 4096
+  context_size: 8192
   threads: 8
   cache_type_k: "q8_0"
   cache_type_v: "q8_0"
@@ -18,7 +18,7 @@ evolution:
   num_islands: 3
   migration_interval: 20
   diff_based_evolution: false
-  max_fix_attempts: 5
+  max_fix_attempts: 2
 
 rust:
   cargo_path: "cargo"
@@ -46,7 +46,7 @@ benchmarks:
 llm_judgment:
   enabled: true
   top_quartile_only: false
-  num_runs: 3
+  num_runs: 1
   dimensions:
     - readability
     - rust_idiomaticity

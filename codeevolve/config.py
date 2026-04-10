@@ -16,7 +16,7 @@ class LlamaServerConfig:
     model_path: str = "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
     port: int = 8080
     gpu_layers: int = 30
-    context_size: int = 4096
+    context_size: int = 8192
     threads: int = 8
     cache_type_k: str = "q8_0"
     cache_type_v: str = "q8_0"
@@ -78,7 +78,7 @@ class BenchmarksConfig:
 class LlmJudgmentConfig:
     enabled: bool = True
     top_quartile_only: bool = False
-    num_runs: int = 3
+    num_runs: int = 1
     dimensions: list[str] = field(
         default_factory=lambda: ["readability", "rust_idiomaticity", "maintainability", "design"]
     )
@@ -93,9 +93,29 @@ class CodeEvolveConfig:
     benchmarks: BenchmarksConfig = field(default_factory=BenchmarksConfig)
     llm_judgment: LlmJudgmentConfig = field(default_factory=LlmJudgmentConfig)
 
-    def to_openevolve_dict(self) -> dict:
-        """Convert to a dict compatible with OpenEvolve's Config.from_dict()."""
+    def to_openevolve_dict(self, frozen_context: str = "") -> dict:
+        """Convert to a dict compatible with OpenEvolve's Config.from_dict().
+
+        Parameters
+        ----------
+        frozen_context:
+            Code that exists outside the EVOLVE-BLOCK (struct definitions,
+            imports, test modules).  Included in the system message so the
+            LLM knows what exists but cannot modify it.
+        """
         diff_mode = self.evolution.diff_based_evolution
+
+        frozen_block = ""
+        if frozen_context:
+            frozen_block = (
+                "\n\nThe code you receive is ONLY the evolvable section. "
+                "The following code exists OUTSIDE your control — do NOT "
+                "redefine, duplicate, or re-import anything shown here:\n\n"
+                f"```rust\n{frozen_context}\n```\n\n"
+                "Do NOT add struct/enum definitions, type aliases, use "
+                "statements, or #[cfg(test)] modules that duplicate the above."
+            )
+
         if diff_mode:
             system_msg = (
                 "You are an expert Rust developer tasked with iteratively "
@@ -114,6 +134,7 @@ class CodeEvolveConfig:
                 "REPLACE sections are identical, your submission is worthless. "
                 "Always change something — try a different algorithm, data "
                 "structure, API usage, or code pattern. do NOT add tests."
+                + frozen_block
             )
         else:
             system_msg = (
@@ -122,13 +143,15 @@ class CodeEvolveConfig:
                 "FITNESS SCORE while exploring diverse solutions. The code "
                 "MUST compile with cargo build and pass all tests. Pay close "
                 "attention to Rust's ownership, borrowing, and lifetime rules.\n\n"
-                "You will receive the current program and must output a COMPLETE "
-                "rewritten version with improvements. Output the full program "
-                "inside a single ```rust code block.\n\n"
+                "You will receive ONLY the evolvable section of code. Output "
+                "an improved version inside a single ```rust code block. "
+                "Do NOT add struct definitions, imports, or test modules — "
+                "those exist outside your control.\n\n"
                 "IMPORTANT: You MUST make at least one meaningful change. "
                 "Do NOT output the original code unchanged. "
                 "Always improve something — try a different algorithm, data "
                 "structure, API usage, or code pattern. do NOT add tests."
+                + frozen_block
             )
 
         return {
@@ -160,11 +183,11 @@ class CodeEvolveConfig:
                 "population_size": self.evolution.population_size,
                 "num_islands": self.evolution.num_islands,
                 "migration_interval": self.evolution.migration_interval,
-                "feature_dimensions": ["llm_score", "perf_score", "loc"],
+                "feature_dimensions": ["complexity", "diversity"],
                 "log_prompts": True,
             },
             "evaluator": {
-                "timeout": 600,
+                "timeout": 900,
                 "parallel_evaluations": 1,
             },
             "early_stopping_patience": 40,

@@ -65,6 +65,7 @@ class CargoResult:
     error_output: str = ""
     tests_passed: int = 0
     tests_failed: int = 0
+    failed_test_names: list[str] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
     warning_counts: dict[str, int] = field(default_factory=dict)
 
@@ -98,17 +99,35 @@ def run_cargo_test(
     elapsed = time.monotonic() - start
     passed = 0
     failed = 0
+    failed_names = []
     for line in proc.stdout.splitlines():
         m = re.search(r"(\d+) passed.*?(\d+) failed", line)
         if m:
             passed += int(m.group(1))
             failed += int(m.group(2))
+        m_fail = re.match(r"^test\s+(\S+)\s+\.\.\.\s+FAILED", line)
+        if m_fail:
+            failed_names.append(m_fail.group(1))
+
+    # For test failures, include stdout (which has assertion/panic messages)
+    # along with stderr so the fixer sees what actually went wrong.
+    if proc.returncode != 0:
+        parts = []
+        if proc.stdout.strip():
+            parts.append(proc.stdout)
+        if proc.stderr.strip():
+            parts.append(proc.stderr)
+        error_output = "\n".join(parts)
+    else:
+        error_output = ""
+
     return CargoResult(
         success=proc.returncode == 0,
         elapsed_seconds=elapsed,
-        error_output=proc.stderr if proc.returncode != 0 else "",
+        error_output=error_output,
         tests_passed=passed,
         tests_failed=failed,
+        failed_test_names=failed_names,
     )
 
 

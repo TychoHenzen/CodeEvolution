@@ -67,6 +67,8 @@ def splice_evolve_block(prefix: str, new_content: str, suffix: str) -> str:
 # returns score 0 for each duplicate, so OpenEvolve's early-stopping
 # (patience configured in the config) will eventually halt the run.
 _MAX_CONSECUTIVE_DUPLICATES_WARN = 10
+
+
 from codeevolve.evaluator.cargo import (
     compute_clippy_score,
     run_cargo_build,
@@ -81,6 +83,38 @@ from codeevolve.evaluator.benchmark import (
 )
 from codeevolve.evaluator.llm_judge import judge_code
 from codeevolve.evaluator.llm_fixer import attempt_fix
+
+
+def _extract_test_function(source: str, fn_name: str) -> str | None:
+    """Extract a Rust test function's source code by name, including attributes."""
+    lines = source.split('\n')
+    fn_line_idx = None
+    for i, line in enumerate(lines):
+        if re.search(rf'\bfn\s+{re.escape(fn_name)}\s*\(', line):
+            fn_line_idx = i
+            break
+    if fn_line_idx is None:
+        return None
+
+    start_idx = fn_line_idx
+    while start_idx > 0 and lines[start_idx - 1].strip().startswith('#['):
+        start_idx -= 1
+
+    depth = 0
+    end_idx = fn_line_idx
+    started = False
+    for i in range(fn_line_idx, len(lines)):
+        for ch in lines[i]:
+            if ch == '{':
+                depth += 1
+                started = True
+            elif ch == '}':
+                depth -= 1
+        if started and depth == 0:
+            end_idx = i
+            break
+
+    return '\n'.join(lines[start_idx:end_idx + 1])
 
 
 @dataclass
@@ -120,6 +154,9 @@ class EvaluationPipeline:
         # EVOLVE-BLOCK structure (prefix, suffix) from original file
         self._evolve_prefix: Optional[str] = None
         self._evolve_suffix: Optional[str] = None
+        # Cached test and frozen context for LLM fix prompts
+        self._test_context: Optional[str] = None
+        self._frozen_context: Optional[str] = None
 
     def _is_top_quartile(self, pre_llm_score: float) -> bool:
         if len(self._score_history) < 4:
@@ -133,6 +170,94 @@ class EvaluationPipeline:
         normalised = code.strip()
         return hashlib.sha256(normalised.encode()).hexdigest()
 
+    def _collect_test_sources(self) -> dict[str, str]:
+        """Collect test source files from src/tests.rs, tests/, and inline modules."""
+        sources: dict[str, str] = {}
+
+        tests_rs = self.project_path / "src" / "tests.rs"
+        if tests_rs.exists():
+            sources[tests_rs.name] = tests_rs.read_text()
+
+        tests_dir = self.project_path / "tests"
+        if tests_dir.is_dir():
+            for tf in sorted(tests_dir.glob("*.rs")):
+                sources[f"tests/{tf.name}"] = tf.read_text()
+
+        if self._evolve_suffix and "#[cfg(test)]" in self._evolve_suffix:
+            sources[f"inline ({self.source_file.name})"] = self._evolve_suffix
+
+        return sources
+
+    def _get_test_context(self) -> str:
+        """Find and read test code from the project.
+
+        Looks for src/tests.rs, tests/ directory, and inline #[cfg(test)]
+        modules in the source file (outside the EVOLVE-BLOCK).
+        """
+        if self._test_context is not None:
+            return self._test_context
+
+        parts = []
+        for name, content in self._collect_test_sources().items():
+            if len(content) > 4000:
+                content = content[:4000] + "\n// ... (truncated)"
+            parts.append(f"// --- {name} ---\n{content}")
+
+        self._test_context = "\n\n".join(parts) if parts else ""
+        if self._test_context:
+            logger.info("Loaded %d chars of test context", len(self._test_context))
+        return self._test_context
+
+    def _get_frozen_context(self) -> str:
+        """Return code outside the EVOLVE-BLOCK (prefix + suffix without markers)."""
+        if self._frozen_context is not None:
+            return self._frozen_context
+
+        parts = []
+        if self._evolve_prefix:
+            prefix = self._evolve_prefix.replace(_MARKER_START + "\n", "").strip()
+            if prefix:
+                parts.append(prefix)
+        if self._evolve_suffix:
+            suffix = self._evolve_suffix.replace(_MARKER_END, "").strip()
+            if suffix:
+                parts.append(suffix)
+
+        self._frozen_context = "\n\n".join(parts) if parts else ""
+        if self._frozen_context:
+            logger.info("Loaded %d chars of frozen context", len(self._frozen_context))
+        return self._frozen_context
+
+    def _get_failing_test_context(self, failed_test_names: list[str]) -> str:
+        """Extract source code of specific failing test functions.
+
+        Falls back to full test context if no functions can be extracted.
+        """
+        if not failed_test_names:
+            return self._get_test_context()
+
+        fn_names = [name.split('::')[-1] for name in failed_test_names]
+        sources = self._collect_test_sources()
+
+        parts = []
+        for fn_name in fn_names:
+            for source_name, source_code in sources.items():
+                extracted = _extract_test_function(source_code, fn_name)
+                if extracted:
+                    parts.append(f"// --- {fn_name} (from {source_name}) ---\n{extracted}")
+                    break
+
+        if not parts:
+            logger.info("Could not find failing test source, falling back to full test context")
+            return self._get_test_context()
+
+        context = "\n\n".join(parts)
+        logger.info(
+            "Loaded %d chars of failing test context (%d/%d tests found)",
+            len(context), len(parts), len(fn_names),
+        )
+        return context
+
     def _try_llm_fix(
         self,
         error_type: str,
@@ -140,6 +265,7 @@ class EvaluationPipeline:
         cfg: CodeEvolveConfig,
         previous_attempts: list[str] | None = None,
         attempt_number: int = 0,
+        test_context: str | None = None,
     ) -> bool:
         """Ask the LLM to fix the current code. Returns True if a fix was applied.
 
@@ -160,6 +286,8 @@ class EvaluationPipeline:
             cfg.llama_server.api_base, cfg.llama_server.model_name,
             previous_attempts=previous_attempts or [],
             attempt_number=attempt_number,
+            test_context=test_context if test_context is not None else self._get_test_context(),
+            frozen_context=self._get_frozen_context(),
         )
         if not fixed or fixed == code_to_fix:
             return False
@@ -290,6 +418,39 @@ class EvaluationPipeline:
         build = None
         test = None
         previous_fix_attempts: list[str] = []
+        seen_fix_outputs: set[str] = set()
+
+        def _attempt_fix_and_track(
+            error_type: str, error_output: str, attempt: int,
+            attempt_label: str, test_context: str = "",
+        ) -> bool:
+            """Try an LLM fix, track history, detect repeats.
+
+            Returns True if a novel fix was applied (caller should retry).
+            Returns False if no fix or fixer is stuck.
+            """
+            pre_fix = self.source_file.read_text()
+            if not self._try_llm_fix(
+                error_type, error_output, cfg,
+                previous_attempts=previous_fix_attempts,
+                attempt_number=attempt,
+                test_context=test_context,
+            ):
+                return False
+            fix_content = self._extract_evolve_content(
+                self.source_file.read_text()
+            )
+            if fix_content in seen_fix_outputs:
+                logger.warning(
+                    "Layer 1 %s: fixer produced repeated output, giving up",
+                    attempt_label,
+                )
+                return False
+            seen_fix_outputs.add(fix_content)
+            previous_fix_attempts.append(
+                self._extract_evolve_content(pre_fix)
+            )
+            return True
 
         for attempt in range(max_attempts):
             is_last_attempt = attempt == max_attempts - 1
@@ -297,22 +458,11 @@ class EvaluationPipeline:
 
             build = run_cargo_build(project_path, cargo, cfg.rust.target_dir)
             if not build.success:
-                if not is_last_attempt:
-                    logger.info(
-                        "Layer 1 %s: cargo build failed, asking LLM to fix...",
-                        attempt_label,
-                    )
-                    # Snapshot current code before fix for history
-                    pre_fix = self.source_file.read_text()
-                    if self._try_llm_fix(
-                        "compile", build.error_output, cfg,
-                        previous_attempts=previous_fix_attempts,
-                        attempt_number=attempt,
-                    ):
-                        previous_fix_attempts.append(
-                            self._extract_evolve_content(pre_fix)
-                        )
-                        continue
+                if not is_last_attempt and _attempt_fix_and_track(
+                    "compile", build.error_output, attempt, attempt_label,
+                    test_context="",
+                ):
+                    continue
                 logger.info("Layer 1 FAIL: cargo build failed (%.1fs)", build.elapsed_seconds)
                 return EvaluationResult(
                     passed_gates=False, combined_score=0.0,
@@ -322,19 +472,13 @@ class EvaluationPipeline:
             test = run_cargo_test(project_path, cargo, cfg.rust.test_args or None)
             if not test.success:
                 if not is_last_attempt:
-                    logger.info(
-                        "Layer 1 %s: cargo test failed (%d passed, %d failed), asking LLM to fix...",
-                        attempt_label, test.tests_passed, test.tests_failed,
+                    failing_ctx = self._get_failing_test_context(
+                        test.failed_test_names,
                     )
-                    pre_fix = self.source_file.read_text()
-                    if self._try_llm_fix(
-                        "pass tests", test.error_output, cfg,
-                        previous_attempts=previous_fix_attempts,
-                        attempt_number=attempt,
+                    if _attempt_fix_and_track(
+                        "pass tests", test.error_output, attempt, attempt_label,
+                        test_context=failing_ctx,
                     ):
-                        previous_fix_attempts.append(
-                            self._extract_evolve_content(pre_fix)
-                        )
                         continue
                 logger.info(
                     "Layer 1 FAIL: cargo test failed (%d passed, %d failed)",
@@ -347,7 +491,6 @@ class EvaluationPipeline:
                     error=test.error_output,
                 )
 
-            # Both build and test passed
             break
 
         logger.info(

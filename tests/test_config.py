@@ -12,7 +12,7 @@ def test_load_default_config():
     assert config.llama_server.model_path.endswith(".gguf")
     assert config.llama_server.port == 8080
     assert config.llama_server.gpu_layers == 30
-    assert config.llama_server.context_size == 4096
+    assert config.llama_server.context_size == 8192
     assert config.llama_server.threads == 8
     assert config.llama_server.flash_attn is True
     assert config.evolution.max_iterations == 500

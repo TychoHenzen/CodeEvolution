@@ -8,27 +8,29 @@
 # Program Evolution History
 {evolution_history}
 
-# Current Program
+# Current Code (evolvable section only)
 ```{language}
 {current_program}
 ```
 
 # Task
-Rewrite the program to improve its FITNESS SCORE.
+Improve this code to increase its FITNESS SCORE.
 The system maintains diversity across these dimensions: {feature_dimensions}
 Different solutions with similar fitness but different features are valuable.
 
-Provide the COMPLETE rewritten program inside a single code block.
+Provide the improved code inside a single code block.
 You MUST make at least one meaningful change to the code.
 
 RULES:
-- Output the FULL rewritten program inside a ```{language} code block
+- Output ONLY the improved code inside a ```{language} code block
 - Do NOT output the original code unchanged — that is worthless
 - The code MUST compile with cargo build and pass all tests
 - Try a different algorithm, data structure, API, or code pattern
 - Pay attention to Rust ownership, borrowing, and lifetime rules
-- Maintain the same public API (function signatures, module structure)
+- Do NOT add struct/enum definitions, type aliases, or use statements — those are defined elsewhere
+- Do NOT add #[cfg(test)] modules or test functions — tests are defined elsewhere
+- Do NOT add a main function
 
 ```{language}
-// Your rewritten program here
+// Your improved code here
 ```

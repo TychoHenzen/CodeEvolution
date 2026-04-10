@@ -56,7 +56,7 @@ def test_pipeline_build_failure_returns_zero(mock_build, mock_fix, pipeline, can
 @patch("codeevolve.evaluator.pipeline.run_cargo_build")
 def test_pipeline_test_failure_returns_zero(mock_build, mock_test, mock_fix, pipeline, candidate_file):
     mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
-    mock_test.return_value = MagicMock(success=False, error_output="test failed", tests_passed=0, tests_failed=1, elapsed_seconds=1.0)
+    mock_test.return_value = MagicMock(success=False, error_output="test failed", tests_passed=0, tests_failed=1, failed_test_names=["tests::test_something"], elapsed_seconds=1.0)
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is False
     assert result.combined_score == 0.0
