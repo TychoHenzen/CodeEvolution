@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from codeevolve.runner import validate_server, run_evolution
 from codeevolve.llama_server import LlamaServer
 from codeevolve.codex_proxy import CodexProxy
 from codeevolve.claude_proxy import ClaudeProxy
+from codeevolve.mixed_proxy import MixedProxy
 
 
 @click.group()
@@ -151,7 +153,8 @@ def reinit(path: Path):
 
 @main.command()
 @click.option("--config", "config_path", type=click.Path(exists=True, path_type=Path), default=".codeevolve/evolution.yaml", help="Path to config file")
-def run(config_path: Path):
+@click.option("--fresh", is_flag=True, default=False, help="Start fresh, ignoring any existing checkpoints")
+def run(config_path: Path, fresh: bool):
     """Run the evolutionary optimizer.
 
     Reads your configuration and starts evolving your code. Each iteration:
@@ -164,6 +167,14 @@ def run(config_path: Path):
     """
     config_path = config_path.resolve()
     project_path = config_path.parent.parent
+
+    if fresh:
+        checkpoints_dir = project_path / ".codeevolve" / "output" / "checkpoints"
+        click.echo("  Clearing existing checkpoints (--fresh)...")
+        try:
+            shutil.rmtree(checkpoints_dir)
+        except FileNotFoundError:
+            pass
 
     try:
         config = load_config(config_path)
@@ -194,6 +205,15 @@ def run(config_path: Path):
             click.echo(f"Error starting Claude proxy: {e}", err=True)
             sys.exit(1)
         click.echo(f"  Claude proxy ready on port {config.claude.proxy_port}")
+    elif config.provider == "mixed":
+        click.echo(f"  Starting mixed proxy (codex: {config.codex.model}, claude: {config.claude.model})...")
+        try:
+            backend = MixedProxy(config.codex, config.claude)
+            backend.start()
+        except Exception as e:
+            click.echo(f"Error starting mixed proxy: {e}", err=True)
+            sys.exit(1)
+        click.echo(f"  Mixed proxy ready (codex@{config.codex.proxy_port} + claude@{config.claude.proxy_port})")
     else:
         model_name = Path(config.llama_server.model_path).name
         click.echo(f"  Starting llama-server ({model_name})...")

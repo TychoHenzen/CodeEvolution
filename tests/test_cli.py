@@ -72,3 +72,69 @@ def test_run_server_start_fails(mock_server_cls, cli_runner, tmp_path):
     result = cli_runner.invoke(main, ["run", "--config", str(config_path)])
     assert result.exit_code != 0
     assert "model not found" in result.output
+
+
+def test_run_fresh_flag_in_help(cli_runner):
+    result = cli_runner.invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--fresh" in result.output
+
+
+def test_run_fresh_deletes_checkpoints(cli_runner, tmp_path):
+    """--fresh should delete the checkpoints directory before starting."""
+    # Set up a fake .codeevolve structure with an existing checkpoints dir
+    codeevolve_dir = tmp_path / ".codeevolve"
+    codeevolve_dir.mkdir()
+    config_path = codeevolve_dir / "evolution.yaml"
+    config_path.write_text("provider: local\nllama_server:\n  port: 8080\n")
+
+    checkpoints_dir = codeevolve_dir / "output" / "checkpoints"
+    checkpoints_dir.mkdir(parents=True)
+    sentinel = checkpoints_dir / "checkpoint_001.json"
+    sentinel.write_text("{}")
+
+    # Stop execution after checkpoint deletion by making the server fail
+    with patch("codeevolve.cli.LlamaServer") as mock_server_cls:
+        mock_server_cls.return_value.start.side_effect = RuntimeError("stop here")
+        result = cli_runner.invoke(main, ["run", "--config", str(config_path), "--fresh"])
+
+    assert "Clearing existing checkpoints" in result.output
+    assert not checkpoints_dir.exists(), "checkpoints dir should have been deleted"
+
+
+def test_run_no_fresh_preserves_checkpoints(cli_runner, tmp_path):
+    """Without --fresh, the checkpoints directory must not be touched."""
+    codeevolve_dir = tmp_path / ".codeevolve"
+    codeevolve_dir.mkdir()
+    config_path = codeevolve_dir / "evolution.yaml"
+    config_path.write_text("provider: local\nllama_server:\n  port: 8080\n")
+
+    checkpoints_dir = codeevolve_dir / "output" / "checkpoints"
+    checkpoints_dir.mkdir(parents=True)
+    sentinel = checkpoints_dir / "checkpoint_001.json"
+    sentinel.write_text("{}")
+
+    with patch("codeevolve.cli.LlamaServer") as mock_server_cls:
+        mock_server_cls.return_value.start.side_effect = RuntimeError("stop here")
+        result = cli_runner.invoke(main, ["run", "--config", str(config_path)])
+
+    assert "Clearing existing checkpoints" not in result.output
+    assert checkpoints_dir.exists(), "checkpoints dir should still exist"
+    assert sentinel.exists(), "checkpoint file should still exist"
+
+
+def test_run_fresh_no_checkpoints_dir(cli_runner, tmp_path):
+    """--fresh with no existing checkpoints dir should not raise an error."""
+    codeevolve_dir = tmp_path / ".codeevolve"
+    codeevolve_dir.mkdir()
+    config_path = codeevolve_dir / "evolution.yaml"
+    config_path.write_text("provider: local\nllama_server:\n  port: 8080\n")
+
+    # No checkpoints dir created — should succeed silently
+    with patch("codeevolve.cli.LlamaServer") as mock_server_cls:
+        mock_server_cls.return_value.start.side_effect = RuntimeError("stop here")
+        result = cli_runner.invoke(main, ["run", "--config", str(config_path), "--fresh"])
+
+    assert "Clearing existing checkpoints" in result.output
+    # Exit should be non-zero only due to the mocked server failure, not due to missing dir
+    assert "FileNotFoundError" not in result.output
