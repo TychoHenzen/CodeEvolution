@@ -29,7 +29,7 @@ from codeevolve.init_project import (
     insert_evolve_markers,
     regenerate_evaluator,
 )
-from codeevolve.runner import validate_server, run_evolution, run_evolution_with_rotation, find_latest_checkpoint
+from codeevolve.runner import run_evolution, run_evolution_with_rotation, find_latest_checkpoint
 from codeevolve.llama_server import LlamaServer
 from codeevolve.codex_proxy import CodexProxy
 from codeevolve.claude_proxy import ClaudeProxy
@@ -143,11 +143,7 @@ def reinit(path: Path):
         click.echo("Error: No files with EVOLVE-BLOCK markers found. Run 'codeevolve init' first.", err=True)
         sys.exit(1)
 
-    regenerate_evaluator(
-        path, config_path,
-        source_files=marked_files,
-        focus_file=marked_files[0],
-    )
+    regenerate_evaluator(path, config_path, focus_file=marked_files[0])
     click.echo(f"  Regenerated .codeevolve/evaluator.py ({len(marked_files)} source file(s))")
 
 
@@ -263,13 +259,34 @@ def run(config_path: Path, fresh: bool):
     # Check if rotation is configured via tech debt ledger
     schedule = None
     if config.evolution.tech_debt_ledger:
-        from codeevolve.ledger import parse_ledger
+        from codeevolve.crate_graph import detect_workspace
+        from codeevolve.import_graph import build_reverse_deps
+        from codeevolve.ledger import LedgerEntry, parse_ledger
         from codeevolve.scheduler import build_schedule
 
         ledger_path = project_path / config.evolution.tech_debt_ledger
         entries = parse_ledger(ledger_path, prod_only=config.evolution.prod_only)
         if entries:
-            top_entries = entries[:config.evolution.top_n_files]
+            # Build import graph for impact weighting
+            workspace_info = detect_workspace(project_path)
+            crate_graph = workspace_info.crate_graph if workspace_info is not None else None
+            reverse_deps = build_reverse_deps(project_path, rs_files, crate_graph)
+
+            # Apply impact weighting: priority = debt_score * (1 + reverse_dep_count)
+            weighted_entries = []
+            for entry in entries:
+                dep_count = reverse_deps.get(entry.file_path, 0)
+                weighted_score = entry.combined_score * (1 + dep_count)
+                weighted_entries.append(
+                    LedgerEntry(
+                        file_path=entry.file_path,
+                        file_type=entry.file_type,
+                        combined_score=weighted_score,
+                    )
+                )
+            weighted_entries.sort(key=lambda e: e.combined_score, reverse=True)
+
+            top_entries = weighted_entries[:config.evolution.top_n_files]
             # Filter to only entries that exist on disk AND have EVOLVE-BLOCK markers
             valid_entries = []
             for entry in top_entries:
