@@ -37,7 +37,7 @@ _pipeline = EvaluationPipeline(
 _CSV_PATH = _CONFIG_PATH.parent / "output" / "metrics.csv"
 _CSV_FIELDS = [
     "generation", "combined_score", "passed_gates", "static_score",
-    "perf_score", "llm_score", "clippy_warnings", "compile_time",
+    "perf_ratio", "llm_score", "clippy_warnings", "compile_time",
     "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
 ]
 _generation = 0
@@ -60,8 +60,7 @@ def evaluate(program_path: str) -> OEResult:
     result = _pipeline.evaluate(program_path)
 
     # Metrics returned to OpenEvolve: only normalized scores where
-    # higher=better, on comparable scales.  Scores naturally bounded
-    # [0,1] are halved so baseline centres around 0.5.
+    # higher=better, on comparable scales.
     # Halve [0,1] bounded scores so baseline centres around 0.5.
     # Assumes fitness weights sum to 1.0 (default: 0.35 + 0.35 + 0.30).
     metrics = {

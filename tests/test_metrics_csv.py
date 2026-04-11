@@ -10,7 +10,7 @@ def _make_csv_logger(csv_path: Path):
     """Build the same _log_metrics_csv / _generation state the rendered evaluator has."""
     fields = [
         "generation", "combined_score", "passed_gates", "static_score",
-        "perf_score", "llm_score", "clippy_warnings", "compile_time",
+        "perf_ratio", "llm_score", "clippy_warnings", "compile_time",
         "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
     ]
     state = {"generation": 0}
@@ -33,7 +33,7 @@ def _metrics_dict(**overrides) -> dict:
         "combined_score": 0.75,
         "passed_gates": 1.0,
         "static_score": -3.0,
-        "perf_score": -100.0,
+        "perf_ratio": -100.0,
         "llm_score": 0.5,
         "clippy_warnings": 2.0,
         "compile_time": 2.0,
@@ -109,7 +109,7 @@ def test_csv_all_fields_present(tmp_path):
 
     expected = {
         "generation", "combined_score", "passed_gates", "static_score",
-        "perf_score", "llm_score", "clippy_warnings", "compile_time",
+        "perf_ratio", "llm_score", "clippy_warnings", "compile_time",
         "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
     }
     assert set(reader.fieldnames) == expected
