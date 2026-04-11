@@ -454,7 +454,27 @@ class EvaluationPipeline:
         self.focus_file.write_text(candidate_code, encoding="utf-8")
 
         try:
-            return self._evaluate_candidate()
+            result = self._evaluate_candidate()
+
+            # --- Fixer writeback ------------------------------------------
+            # If the fixer changed the code and the candidate passed gates,
+            # write the fixed version back to program_path so OpenEvolve
+            # stores the correct (fixed) code instead of the original broken
+            # candidate.  This prevents a code-fitness mismatch where a
+            # high-scoring program's stored code is actually broken.
+            if result.passed_gates:
+                current_code = self.focus_file.read_text(encoding="utf-8")
+                if current_code != candidate_code:
+                    fixed_evolve = self._extract_evolve_content(current_code)
+                    if self._is_bundle(raw_candidate):
+                        from codeevolve.bundler import replace_focus
+                        fixed_bundle = replace_focus(raw_candidate, fixed_evolve)
+                        Path(program_path).write_text(fixed_bundle, encoding="utf-8")
+                    else:
+                        Path(program_path).write_text(fixed_evolve, encoding="utf-8")
+                    logger.info("Fixer writeback: updated program_path with fixed code")
+
+            return result
         finally:
             # Always restore the original source file
             self.focus_file.write_text(original_code, encoding="utf-8")

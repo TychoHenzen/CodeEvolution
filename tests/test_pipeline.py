@@ -351,3 +351,206 @@ def test_result_keeps_raw_counts_for_internal_use(mock_clean, mock_clippy, mock_
     assert result.tests_failed == 0
     assert result.clippy_warnings == 3
     assert result.build_time == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Fixer writeback tests
+# ---------------------------------------------------------------------------
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_fixer_writeback_updates_program_path(mock_clean, mock_clippy, mock_test, mock_judge, tmp_path):
+    """When the fixer changes code during evaluation, program_path is updated."""
+    config = load_config()
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    # First call to clippy fails (triggers fixer), second succeeds
+    clippy_fail = MagicMock(success=False, error_output="compile error", elapsed_seconds=1.0)
+    clippy_pass = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
+    mock_clippy.side_effect = [clippy_fail, clippy_pass]
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+    mock_judge.return_value = MagicMock(combined_score=0.5)
+
+    # The fixer modifies the focus file on disk
+    fixed_code = "fn main() { fixed(); }"
+    def fake_attempt_fix(code, err_type, err_output, api_base, model, **kwargs):
+        return fixed_code
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn main() { broken(); }", encoding="utf-8")
+    original_candidate = candidate.read_text(encoding="utf-8")
+
+    with patch("codeevolve.evaluator.pipeline.attempt_fix", side_effect=fake_attempt_fix):
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is True
+    # program_path should have been updated with the fixed code
+    updated = candidate.read_text(encoding="utf-8")
+    assert updated != original_candidate
+    assert "fixed" in updated
+    # Source file should be restored to original
+    assert source_file.read_text(encoding="utf-8") == "fn main() { original(); }"
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_no_writeback_when_code_unchanged(mock_clean, mock_clippy, mock_test, mock_judge, tmp_path):
+    """When the fixer is not invoked, program_path remains unchanged."""
+    config = load_config()
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    # Clippy passes first try (no fixer needed)
+    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+    mock_judge.return_value = MagicMock(combined_score=0.5)
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn main() { improved(); }", encoding="utf-8")
+    original_candidate = candidate.read_text(encoding="utf-8")
+
+    result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is True
+    # program_path should be unchanged
+    assert candidate.read_text(encoding="utf-8") == original_candidate
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_fixer_writeback_no_update_on_gate_failure(mock_clean, mock_clippy, mock_test, mock_judge, tmp_path):
+    """When passed_gates is False, no writeback happens even if fixer ran."""
+    config = load_config()
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    # All attempts fail (fixer doesn't help enough)
+    mock_clippy.return_value = MagicMock(success=False, error_output="compile error", elapsed_seconds=1.0)
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn main() { broken(); }", encoding="utf-8")
+    original_candidate = candidate.read_text(encoding="utf-8")
+
+    with patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None):
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is False
+    # program_path should NOT be updated
+    assert candidate.read_text(encoding="utf-8") == original_candidate
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_fixer_writeback_with_evolve_block(mock_clean, mock_clippy, mock_test, mock_judge, tmp_path):
+    """Writeback works correctly when focus file has EVOLVE-BLOCK markers."""
+    config = load_config()
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text(
+        "use std::io;\n"
+        "// EVOLVE-BLOCK-START\n"
+        "fn foo() { 1 }\n"
+        "// EVOLVE-BLOCK-END\n"
+        "mod tests;\n",
+        encoding="utf-8",
+    )
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    # First clippy fails, second passes (fixer succeeds)
+    clippy_fail = MagicMock(success=False, error_output="error", elapsed_seconds=1.0)
+    clippy_pass = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
+    mock_clippy.side_effect = [clippy_fail, clippy_pass]
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+    mock_judge.return_value = MagicMock(combined_score=0.5)
+
+    def fake_attempt_fix(code, err_type, err_output, api_base, model, **kwargs):
+        return "fn foo() { 42 }"
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn foo() { broken }", encoding="utf-8")
+
+    with patch("codeevolve.evaluator.pipeline.attempt_fix", side_effect=fake_attempt_fix):
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is True
+    # The candidate file should contain the fixed evolve content
+    updated = candidate.read_text(encoding="utf-8")
+    assert "fn foo() { 42 }" in updated
+    # The source file should be restored
+    restored = source_file.read_text(encoding="utf-8")
+    assert "fn foo() { 1 }" in restored
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_fixer_writeback_bundle_candidate(mock_clean, mock_clippy, mock_test, mock_judge, tmp_path):
+    """Writeback correctly reconstructs the bundle when candidate is a bundle."""
+    config = load_config()
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    # First clippy fails, second passes
+    clippy_fail = MagicMock(success=False, error_output="error", elapsed_seconds=1.0)
+    clippy_pass = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
+    mock_clippy.side_effect = [clippy_fail, clippy_pass]
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+    mock_judge.return_value = MagicMock(combined_score=0.5)
+
+    def fake_attempt_fix(code, err_type, err_output, api_base, model, **kwargs):
+        return "fn main() { fixed(); }"
+
+    bundle_content = (
+        "// === CONTEXT (read-only \u2014 do NOT modify) ===\n"
+        "// file: other.rs\n"
+        "pub fn other() {}\n"
+        "// === END CONTEXT ===\n\n"
+        "// === FOCUS: src/lib.rs ===\n"
+        "// (This is the file you should improve. Output your improved version below.)\n"
+        "fn main() { broken(); }\n"
+        "// === END FOCUS ===\n"
+    )
+    candidate = tmp_path / "bundle_candidate.rs"
+    candidate.write_text(bundle_content, encoding="utf-8")
+
+    with patch("codeevolve.evaluator.pipeline.attempt_fix", side_effect=fake_attempt_fix):
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is True
+    # The bundle should be updated with fixed focus content
+    updated = candidate.read_text(encoding="utf-8")
+    assert "// === FOCUS:" in updated
+    assert "// === END FOCUS ===" in updated
+    assert "fn main() { fixed(); }" in updated
+    assert "fn main() { broken(); }" not in updated
+    # Context section should be preserved
+    assert "pub fn other() {}" in updated

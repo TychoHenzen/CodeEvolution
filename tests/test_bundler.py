@@ -1,4 +1,4 @@
-"""Tests for codeevolve.bundler — multi-file bundle format and focus rotation."""
+"""Tests for codeevolve.bundler — multi-file bundle format."""
 
 from __future__ import annotations
 
@@ -8,11 +8,10 @@ import pytest
 
 from codeevolve.bundler import (
     create_bundle,
-    create_focus_rotation,
     create_workspace_bundle,
     extract_focus,
     extract_focus_path,
-    FocusRotation,
+    replace_focus,
 )
 from codeevolve.crate_graph import CrateGraph
 
@@ -230,97 +229,6 @@ class TestExtractFocusPath:
 
 
 # ---------------------------------------------------------------------------
-# FocusRotation
-# ---------------------------------------------------------------------------
-
-class TestFocusRotation:
-    def test_single_file_rotation(self, tmp_path: Path):
-        f = tmp_path / "src/a.rs"
-        rot = FocusRotation([f])
-        assert rot.current() == f
-        assert rot.next() == f
-        assert rot.next() == f  # wraps around
-
-    def test_cycles_through_files(self, tmp_path: Path):
-        files = [tmp_path / f"src/{c}.rs" for c in "abc"]
-        rot = FocusRotation(files)
-
-        # Should cycle through all files in sorted order
-        seen = [rot.next() for _ in range(3)]
-        assert len(set(seen)) == 3
-
-    def test_wraps_around(self, tmp_path: Path):
-        files = [tmp_path / f"src/{c}.rs" for c in "ab"]
-        rot = FocusRotation(files)
-
-        first_cycle = [rot.next() for _ in range(2)]
-        second_cycle = [rot.next() for _ in range(2)]
-        assert first_cycle == second_cycle
-
-    def test_current_does_not_advance(self, tmp_path: Path):
-        files = [tmp_path / f"src/{c}.rs" for c in "abc"]
-        rot = FocusRotation(files)
-
-        c1 = rot.current()
-        c2 = rot.current()
-        assert c1 == c2
-
-    def test_next_advances_then_current_matches(self, tmp_path: Path):
-        files = [tmp_path / f"src/{c}.rs" for c in "abc"]
-        rot = FocusRotation(files)
-
-        rot.next()  # advance past first
-        current = rot.current()
-        next_val = rot.next()
-        assert current == next_val
-
-    def test_deterministic_order(self, tmp_path: Path):
-        """Same files in different input order produce same rotation."""
-        a = tmp_path / "src/a.rs"
-        b = tmp_path / "src/b.rs"
-        c = tmp_path / "src/c.rs"
-
-        rot1 = FocusRotation([c, a, b])
-        rot2 = FocusRotation([b, c, a])
-
-        seq1 = [rot1.next() for _ in range(6)]
-        seq2 = [rot2.next() for _ in range(6)]
-        assert seq1 == seq2
-
-    def test_empty_files_raises(self):
-        with pytest.raises(ValueError, match="at least one file"):
-            FocusRotation([])
-
-    def test_len(self, tmp_path: Path):
-        files = [tmp_path / f"src/{c}.rs" for c in "abcd"]
-        rot = FocusRotation(files)
-        assert len(rot) == 4
-
-    def test_repr(self, tmp_path: Path):
-        files = [tmp_path / "src/main.rs"]
-        rot = FocusRotation(files)
-        r = repr(rot)
-        assert "FocusRotation" in r
-        assert "main.rs" in r
-
-
-# ---------------------------------------------------------------------------
-# create_focus_rotation convenience function
-# ---------------------------------------------------------------------------
-
-class TestCreateFocusRotation:
-    def test_returns_focus_rotation(self, tmp_path: Path):
-        files = [tmp_path / "src/a.rs", tmp_path / "src/b.rs"]
-        rot = create_focus_rotation(files)
-        assert isinstance(rot, FocusRotation)
-        assert len(rot) == 2
-
-    def test_empty_raises(self):
-        with pytest.raises(ValueError):
-            create_focus_rotation([])
-
-
-# ---------------------------------------------------------------------------
 # Helpers for workspace bundle tests
 # ---------------------------------------------------------------------------
 
@@ -432,3 +340,80 @@ class TestCreateWorkspaceBundle:
         context = bundle.split("// === END CONTEXT ===")[0]
         # The focus file's summary should not be in context
         assert "pub fn render()" not in context
+
+
+# ---------------------------------------------------------------------------
+# replace_focus
+# ---------------------------------------------------------------------------
+
+class TestReplaceFocus:
+    def test_replaces_focus_content(self):
+        bundle = (
+            "// === CONTEXT (read-only \u2014 do NOT modify) ===\n"
+            "// === END CONTEXT ===\n"
+            "\n"
+            "// === FOCUS: src/lib.rs ===\n"
+            "// (This is the file you should improve. Output your improved version below.)\n"
+            "fn original() {}\n"
+            "// === END FOCUS ===\n"
+        )
+        result = replace_focus(bundle, "fn fixed() {}")
+        extracted = extract_focus(result)
+        assert "fn fixed() {}" in extracted
+        assert "fn original() {}" not in extracted
+
+    def test_preserves_context_section(self):
+        bundle = (
+            "// === CONTEXT (read-only \u2014 do NOT modify) ===\n"
+            "// file: src/other.rs\n"
+            "pub fn other() {}\n"
+            "// === END CONTEXT ===\n"
+            "\n"
+            "// === FOCUS: src/lib.rs ===\n"
+            "// (This is the file you should improve. Output your improved version below.)\n"
+            "fn original() {}\n"
+            "// === END FOCUS ===\n"
+        )
+        result = replace_focus(bundle, "fn fixed() {}")
+        assert "// file: src/other.rs" in result
+        assert "pub fn other() {}" in result
+
+    def test_preserves_focus_path(self):
+        bundle = (
+            "// === FOCUS: crates/core/src/lib.rs ===\n"
+            "// (This is the file you should improve. Output your improved version below.)\n"
+            "fn original() {}\n"
+            "// === END FOCUS ===\n"
+        )
+        result = replace_focus(bundle, "fn fixed() {}")
+        assert extract_focus_path(result) == "crates/core/src/lib.rs"
+
+    def test_roundtrip_with_create_bundle(self, tmp_path: Path):
+        """replace_focus + extract_focus roundtrip works on real bundles."""
+        inner = "pub fn old() -> i32 { 1 }"
+        focus = _write_evolve(tmp_path, "src/lib.rs", inner)
+        bundle = create_bundle(focus, [focus], {}, tmp_path)
+
+        new_content = "pub fn new() -> i32 { 2 }"
+        replaced = replace_focus(bundle, new_content)
+        extracted = extract_focus(replaced)
+        assert new_content in extracted
+        assert inner not in extracted
+
+    def test_raises_on_no_markers(self):
+        with pytest.raises(ValueError, match="FOCUS markers"):
+            replace_focus("no markers here", "anything")
+
+    def test_multiline_replacement(self):
+        bundle = (
+            "// === FOCUS: src/lib.rs ===\n"
+            "// (This is the file you should improve. Output your improved version below.)\n"
+            "fn original() {}\n"
+            "// === END FOCUS ===\n"
+        )
+        new_content = "fn line_one() {}\nfn line_two() {}\nfn line_three() {}"
+        result = replace_focus(bundle, new_content)
+        extracted = extract_focus(result)
+        assert "fn line_one() {}" in extracted
+        assert "fn line_two() {}" in extracted
+        assert "fn line_three() {}" in extracted

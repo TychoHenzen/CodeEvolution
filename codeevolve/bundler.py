@@ -156,6 +156,27 @@ def extract_focus(bundle_text: str) -> str:
     return content
 
 
+def replace_focus(bundle_text: str, new_focus: str) -> str:
+    """Replace the focus section content in a bundle with *new_focus*.
+
+    Returns the bundle with the text between the FOCUS header+hint and
+    ``// === END FOCUS ===`` replaced by *new_focus*.
+
+    Raises ``ValueError`` if the FOCUS markers are not found.
+    """
+    m = _FOCUS_RE.search(bundle_text)
+    if m is None:
+        raise ValueError("Bundle does not contain FOCUS markers")
+    # m.group(1) is the content between hint line and END FOCUS marker.
+    # We replace that entire span.  The span of group(1) gives us the
+    # byte offsets within bundle_text.
+    start, end = m.span(1)
+    # Preserve the leading newline after the hint line and trailing
+    # newline before END FOCUS that are part of the format.
+    replacement = "\n" + new_focus + "\n"
+    return bundle_text[:start] + replacement + bundle_text[end:]
+
+
 def extract_focus_path(bundle_text: str) -> str | None:
     """Extract the relative path of the focus file from a bundle.
 
@@ -165,57 +186,6 @@ def extract_focus_path(bundle_text: str) -> str | None:
     if m is None:
         return None
     return m.group(1)
-
-
-# ---------------------------------------------------------------------------
-# Focus rotation
-# ---------------------------------------------------------------------------
-
-class FocusRotation:
-    """Round-robin iterator over files for focus selection.
-
-    Deterministic: given the same file list, the order is always the same.
-    Files are sorted by path to ensure reproducibility regardless of
-    discovery order.
-    """
-
-    def __init__(self, files: list[Path]) -> None:
-        if not files:
-            raise ValueError("FocusRotation requires at least one file")
-        # Sort for determinism
-        self._files: list[Path] = sorted(files, key=lambda p: p.as_posix())
-        self._index: int = 0
-
-    def next(self) -> Path:
-        """Return the next file to focus on and advance the pointer."""
-        f = self._files[self._index]
-        self._index = (self._index + 1) % len(self._files)
-        return f
-
-    def current(self) -> Path:
-        """Return the current focus file without advancing."""
-        return self._files[self._index]
-
-    def __len__(self) -> int:
-        return len(self._files)
-
-    def __repr__(self) -> str:
-        return (
-            f"FocusRotation(files={len(self._files)}, "
-            f"current={self._files[self._index].name!r})"
-        )
-
-
-def create_focus_rotation(files: list[Path]) -> FocusRotation:
-    """Create a round-robin focus rotation over files.
-
-    Args:
-        files: List of file paths to rotate through.
-
-    Returns:
-        A ``FocusRotation`` that cycles through the files deterministically.
-    """
-    return FocusRotation(files)
 
 
 # ---------------------------------------------------------------------------
