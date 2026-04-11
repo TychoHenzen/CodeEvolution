@@ -7,6 +7,8 @@ from codeevolve.config import load_config
 from codeevolve.evaluator.pipeline import (
     EvaluationPipeline,
     EvaluationResult,
+    _format_clippy_diagnostics,
+    _truncate_artifact,
     parse_evolve_block,
     splice_evolve_block,
 )
@@ -554,3 +556,142 @@ def test_fixer_writeback_bundle_candidate(mock_clean, mock_clippy, mock_test, mo
     assert "fn main() { broken(); }" not in updated
     # Context section should be preserved
     assert "pub fn other() {}" in updated
+
+
+# ---------------------------------------------------------------------------
+# Artifact feedback channel tests
+# ---------------------------------------------------------------------------
+
+
+def test_evaluation_result_has_artifacts_field():
+    """EvaluationResult dataclass has an artifacts dict, defaulting to empty."""
+    r = EvaluationResult(passed_gates=True, combined_score=0.5)
+    assert r.artifacts == {}
+
+    r2 = EvaluationResult(
+        passed_gates=True, combined_score=0.5,
+        artifacts={"clippy_diagnostics": "some warning"},
+    )
+    assert r2.artifacts["clippy_diagnostics"] == "some warning"
+
+
+def test_format_clippy_diagnostics_empty():
+    assert _format_clippy_diagnostics([]) == ""
+
+
+def test_format_clippy_diagnostics_formats_warnings():
+    warnings = [
+        {"code": "clippy::needless_return", "message": "unneeded return", "level": "warning", "file": "src/lib.rs", "line": 42},
+        {"code": "clippy::redundant_clone", "message": "redundant clone", "level": "warning", "file": "src/main.rs", "line": 10},
+    ]
+    result = _format_clippy_diagnostics(warnings)
+    assert "clippy::needless_return" in result
+    assert "unneeded return" in result
+    assert "src/lib.rs:42" in result
+    assert "clippy::redundant_clone" in result
+    assert "src/main.rs:10" in result
+
+
+def test_truncate_artifact_short_string():
+    short = "hello world"
+    assert _truncate_artifact(short) == short
+
+
+def test_truncate_artifact_long_string():
+    long_text = "x" * 10_000
+    result = _truncate_artifact(long_text, limit=500)
+    assert len(result.encode("utf-8")) <= 500
+    assert "truncated" in result
+
+
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_build_failure_includes_build_errors_artifact(mock_clean, mock_clippy, mock_fix, pipeline, candidate_file):
+    """Build failure should include build_errors artifact."""
+    mock_clippy.return_value = MagicMock(
+        success=False, error_output="error[E0308]: mismatched types",
+        elapsed_seconds=1.0,
+    )
+    result = pipeline.evaluate(str(candidate_file))
+    assert result.passed_gates is False
+    assert "build_errors" in result.artifacts
+    assert "mismatched types" in result.artifacts["build_errors"]
+
+
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_test_failure_includes_artifacts(mock_clean, mock_clippy, mock_test, mock_fix, pipeline, candidate_file):
+    """Test failure should include test_failures and clippy_diagnostics artifacts."""
+    mock_clippy.return_value = MagicMock(
+        success=True,
+        warnings=[{"code": "clippy::needless_return", "message": "unneeded return", "level": "warning", "file": "src/lib.rs", "line": 5}],
+        warning_counts={"style": 1},
+        elapsed_seconds=1.0,
+    )
+    mock_test.return_value = MagicMock(
+        success=False,
+        error_output="thread 'tests::it_works' panicked at 'assertion failed'",
+        tests_passed=0, tests_failed=1,
+        failed_test_names=["tests::it_works"],
+        elapsed_seconds=1.0,
+    )
+    result = pipeline.evaluate(str(candidate_file))
+    assert result.passed_gates is False
+    assert "test_failures" in result.artifacts
+    assert "assertion failed" in result.artifacts["test_failures"]
+    assert "clippy_diagnostics" in result.artifacts
+    assert "needless_return" in result.artifacts["clippy_diagnostics"]
+
+
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_passing_candidate_includes_clippy_artifacts(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
+    """Passing candidate with clippy warnings should include clippy_diagnostics artifact."""
+    mock_clippy.return_value = MagicMock(
+        success=True,
+        warnings=[
+            {"code": "clippy::redundant_clone", "message": "redundant clone", "level": "warning", "file": "src/lib.rs", "line": 10},
+        ],
+        warning_counts={"perf": 1},
+        elapsed_seconds=1.0,
+    )
+    mock_test.return_value = MagicMock(success=True, tests_passed=3, tests_failed=0, elapsed_seconds=0.5)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    result = pipeline.evaluate(str(candidate_file))
+    assert result.passed_gates is True
+    assert "clippy_diagnostics" in result.artifacts
+    assert "redundant_clone" in result.artifacts["clippy_diagnostics"]
+
+
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_passing_candidate_no_warnings_has_empty_artifacts(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
+    """Passing candidate with zero warnings should have empty artifacts dict."""
+    mock_clippy.return_value = MagicMock(
+        success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0,
+    )
+    mock_test.return_value = MagicMock(success=True, tests_passed=3, tests_failed=0, elapsed_seconds=0.5)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    result = pipeline.evaluate(str(candidate_file))
+    assert result.passed_gates is True
+    assert result.artifacts == {}
+
+
+def test_duplicate_candidate_has_empty_artifacts(pipeline, tmp_path):
+    """Duplicate candidate rejection should have empty artifacts."""
+    dup = tmp_path / "dup.rs"
+    dup.write_text("fn main() {}")  # same as source_file fixture
+    result = pipeline.evaluate(str(dup))
+    assert result.passed_gates is False
+    assert result.artifacts == {}

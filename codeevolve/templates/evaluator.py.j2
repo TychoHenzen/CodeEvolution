@@ -23,6 +23,7 @@ sys.path.insert(0, "{{ codeevolve_package_path }}")
 
 from codeevolve.config import load_config
 from codeevolve.evaluator.pipeline import EvaluationPipeline
+from openevolve.evaluation_result import EvaluationResult as OEResult
 
 _CONFIG_PATH = Path("{{ config_path }}")
 _PROJECT_PATH = Path("{{ project_path }}")
@@ -54,8 +55,8 @@ def _log_metrics_csv(metrics: dict):
         writer.writerow({"generation": _generation, **metrics})
 
 
-def evaluate(program_path: str) -> dict:
-    """OpenEvolve calls this for each candidate. Returns a metrics dict."""
+def evaluate(program_path: str) -> OEResult:
+    """OpenEvolve calls this for each candidate. Returns an EvaluationResult."""
     result = _pipeline.evaluate(program_path)
 
     # Metrics returned to OpenEvolve: only normalized scores where
@@ -84,6 +85,10 @@ def evaluate(program_path: str) -> dict:
     }
     _log_metrics_csv(csv_metrics)
 
+    # Artifacts: clippy diagnostics, test failures, etc. rendered into
+    # subsequent LLM prompts via OpenEvolve's {artifacts} placeholder.
+    artifacts = result.artifacts
+
     if result.passed_gates:
         print(
             f"[gen {_generation}] score={metrics['combined_score']:.3f} "
@@ -94,4 +99,4 @@ def evaluate(program_path: str) -> dict:
         print(
             f"[gen {_generation}] score=0.000 gates=FAIL error={error_short}"
         )
-    return metrics
+    return OEResult(metrics=metrics, artifacts=artifacts)

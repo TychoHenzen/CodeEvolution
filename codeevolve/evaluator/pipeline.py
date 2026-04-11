@@ -117,6 +117,33 @@ def _extract_test_function(source: str, fn_name: str) -> str | None:
     return '\n'.join(lines[start_idx:end_idx + 1])
 
 
+_ARTIFACT_MAX_BYTES = 5_000  # Per-artifact truncation limit
+
+
+def _truncate_artifact(text: str, limit: int = _ARTIFACT_MAX_BYTES) -> str:
+    """Truncate an artifact string to *limit* bytes, appending a notice."""
+    if len(text.encode("utf-8", errors="replace")) <= limit:
+        return text
+    # Truncate by characters, checking byte length
+    truncated = text
+    while len(truncated.encode("utf-8", errors="replace")) > limit - 40:
+        truncated = truncated[: len(truncated) * 3 // 4]
+    return truncated + "\n... (truncated to fit artifact limit)"
+
+
+def _format_clippy_diagnostics(warnings: list[dict]) -> str:
+    """Format clippy warning dicts into human-readable diagnostic text."""
+    if not warnings:
+        return ""
+    lines = []
+    for w in warnings:
+        location = f"{w.get('file', '?')}:{w.get('line', '?')}"
+        code = w.get("code", "unknown")
+        message = w.get("message", "")
+        lines.append(f"  warning[{code}]: {message}\n    --> {location}")
+    return "\n".join(lines)
+
+
 @dataclass
 class EvaluationResult:
     passed_gates: bool
@@ -133,6 +160,7 @@ class EvaluationResult:
     compile_time: float = 0.0
     loc: float = 0.0
     error: str = ""
+    artifacts: dict[str, str] = field(default_factory=dict)
 
 
 class EvaluationPipeline:
@@ -503,6 +531,7 @@ class EvaluationPipeline:
         compile_time = 0.0
         previous_fix_attempts: list[str] = []
         seen_fix_outputs: set[str] = set()
+        artifacts: dict[str, str] = {}
 
         def _attempt_fix_and_track(
             error_type: str, error_output: str, attempt: int,
@@ -563,9 +592,14 @@ class EvaluationPipeline:
                     "Layer 1 FAIL: cargo clippy --release failed (%.1fs)",
                     clippy.elapsed_seconds,
                 )
+                if clippy.error_output:
+                    artifacts["build_errors"] = _truncate_artifact(
+                        clippy.error_output
+                    )
                 return EvaluationResult(
                     passed_gates=False, combined_score=0.0,
                     build_time=clippy.elapsed_seconds, error=clippy.error_output,
+                    artifacts=artifacts,
                 )
 
             test = run_cargo_test(project_path, cargo, cfg.rust.test_args or None)
@@ -583,11 +617,25 @@ class EvaluationPipeline:
                     "Layer 1 FAIL: cargo test failed (%d passed, %d failed)",
                     test.tests_passed, test.tests_failed,
                 )
+                if test.error_output:
+                    artifacts["test_failures"] = _truncate_artifact(
+                        test.error_output
+                    )
+                failing_ctx = self._get_failing_test_context(
+                    test.failed_test_names,
+                )
+                if failing_ctx:
+                    artifacts["test_context"] = _truncate_artifact(failing_ctx)
+                # Include any clippy diagnostics collected before test failure
+                diag = _format_clippy_diagnostics(clippy.warnings)
+                if diag:
+                    artifacts["clippy_diagnostics"] = _truncate_artifact(diag)
                 return EvaluationResult(
                     passed_gates=False, combined_score=0.0,
                     build_time=clippy.elapsed_seconds,
                     tests_passed=test.tests_passed, tests_failed=test.tests_failed,
                     error=test.error_output,
+                    artifacts=artifacts,
                 )
 
             break
@@ -729,6 +777,13 @@ class EvaluationPipeline:
             combined,
         )
 
+        # Collect artifacts for ALL candidates (including passing ones).
+        # Clippy suggestions on passing code are valuable guidance for the
+        # next mutation (e.g. "consider using iter().take(n)").
+        diag = _format_clippy_diagnostics(clippy.warnings)
+        if diag:
+            artifacts["clippy_diagnostics"] = _truncate_artifact(diag)
+
         return EvaluationResult(
             passed_gates=True,
             combined_score=combined,
@@ -743,4 +798,5 @@ class EvaluationPipeline:
             binary_size=binary_ratio,
             compile_time=compile_ratio,
             loc=loc_ratio,
+            artifacts=artifacts,
         )
