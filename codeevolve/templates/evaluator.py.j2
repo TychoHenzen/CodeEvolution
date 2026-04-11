@@ -26,24 +26,18 @@ from codeevolve.evaluator.pipeline import EvaluationPipeline
 
 _CONFIG_PATH = Path("{{ config_path }}")
 _PROJECT_PATH = Path("{{ project_path }}")
-_SOURCE_FILES = [
-{% for f in source_files %}
-    Path("{{ f }}"),
-{% endfor %}
-]
 _FOCUS_FILE = Path("{{ focus_file }}")
 _config = load_config(_CONFIG_PATH)
 _pipeline = EvaluationPipeline(
     _config, _PROJECT_PATH,
     focus_file=_FOCUS_FILE,
-    all_source_files=_SOURCE_FILES,
 )
 
 _CSV_PATH = _CONFIG_PATH.parent / "output" / "metrics.csv"
 _CSV_FIELDS = [
     "generation", "combined_score", "passed_gates", "static_score",
     "perf_score", "llm_score", "clippy_warnings", "compile_time",
-    "binary_size", "tests_passed", "loc",
+    "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
 ]
 _generation = 0
 
@@ -63,19 +57,31 @@ def _log_metrics_csv(metrics: dict):
 def evaluate(program_path: str) -> dict:
     """OpenEvolve calls this for each candidate. Returns a metrics dict."""
     result = _pipeline.evaluate(program_path)
+
+    # Metrics returned to OpenEvolve: only normalized scores where
+    # higher=better, on comparable scales.  Scores naturally bounded
+    # [0,1] are halved so baseline centres around 0.5.
     metrics = {
-        "combined_score": result.combined_score,
-        "passed_gates": int(result.passed_gates),
-        "static_score": result.static_score,
+        "combined_score": result.combined_score / 2.0,
+        "static_score": result.static_score / 2.0,
         "perf_score": result.perf_score,
-        "llm_score": result.llm_score,
-        "clippy_warnings": result.clippy_warnings,
+        "llm_score": result.llm_score / 2.0,
         "compile_time": result.compile_time,
         "binary_size": result.binary_size,
-        "tests_passed": result.tests_passed,
         "loc": result.loc,
     }
-    _log_metrics_csv(metrics)
+
+    # CSV metrics: everything for human debugging (not returned to OpenEvolve).
+    csv_metrics = {
+        **metrics,
+        "passed_gates": int(result.passed_gates),
+        "clippy_warnings": result.clippy_warnings,
+        "tests_passed": result.tests_passed,
+        "tests_failed": result.tests_failed,
+        "build_time": result.build_time,
+    }
+    _log_metrics_csv(csv_metrics)
+
     if result.passed_gates:
         print(
             f"[gen {_generation}] score={metrics['combined_score']:.3f} "

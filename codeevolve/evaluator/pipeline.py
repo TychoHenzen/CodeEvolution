@@ -141,20 +141,13 @@ class EvaluationPipeline:
         self,
         config: CodeEvolveConfig,
         project_path: Path,
-        source_file: Optional[Path] = None,
-        *,
         focus_file: Optional[Path] = None,
-        all_source_files: Optional[list[Path]] = None,
     ):
         self.config = config
         self.project_path = project_path
-        # Accept either source_file (legacy) or focus_file (workspace mode).
-        # At least one must be provided.
-        resolved = focus_file or source_file
-        if resolved is None:
-            raise ValueError("Either source_file or focus_file must be provided")
-        self.focus_file: Path = resolved
-        self.all_source_files: list[Path] = all_source_files or [self.focus_file]
+        if focus_file is None:
+            raise ValueError("focus_file must be provided")
+        self.focus_file: Path = focus_file
         self._score_history: list[float] = []
         self._baseline_loc: Optional[int] = None
         self._baseline_compile_time: Optional[float] = None
@@ -171,15 +164,6 @@ class EvaluationPipeline:
         # Cached test and frozen context for LLM fix prompts
         self._test_context: Optional[str] = None
         self._frozen_context: Optional[str] = None
-
-    @property
-    def source_file(self) -> Path:
-        """Backward-compatible alias for focus_file."""
-        return self.focus_file
-
-    @source_file.setter
-    def source_file(self, value: Path) -> None:
-        self.focus_file = value
 
     def _is_top_quartile(self, pre_llm_score: float) -> bool:
         if len(self._score_history) < 4:
@@ -317,7 +301,7 @@ class EvaluationPipeline:
         Only sends the EVOLVE-BLOCK content to the LLM, then splices the
         fix back into the original file structure.
         """
-        current_code = self.source_file.read_text(encoding="utf-8")
+        current_code = self.focus_file.read_text(encoding="utf-8")
 
         # Extract only the evolve-block content to send to the LLM
         if self._evolve_prefix is not None:
@@ -346,7 +330,7 @@ class EvaluationPipeline:
         else:
             spliced = fixed_content
 
-        self.source_file.write_text(spliced, encoding="utf-8")
+        self.focus_file.write_text(spliced, encoding="utf-8")
         return True
 
     def _extract_evolve_content(self, candidate_code: str) -> str:
@@ -505,7 +489,7 @@ class EvaluationPipeline:
             Returns True if a novel fix was applied (caller should retry).
             Returns False if no fix or fixer is stuck.
             """
-            pre_fix = self.source_file.read_text(encoding="utf-8")
+            pre_fix = self.focus_file.read_text(encoding="utf-8")
             if not self._try_llm_fix(
                 error_type, error_output, cfg,
                 previous_attempts=previous_fix_attempts,
@@ -514,7 +498,7 @@ class EvaluationPipeline:
             ):
                 return False
             fix_content = self._extract_evolve_content(
-                self.source_file.read_text(encoding="utf-8")
+                self.focus_file.read_text(encoding="utf-8")
             )
             if fix_content in seen_fix_outputs:
                 logger.warning(
@@ -687,7 +671,7 @@ class EvaluationPipeline:
         if cfg.llm_judgment.enabled and (
             not cfg.llm_judgment.top_quartile_only or top_q
         ):
-            code = self.source_file.read_text(encoding="utf-8")
+            code = self.focus_file.read_text(encoding="utf-8")
             judgment = judge_code(
                 code=code,
                 api_base=cfg.api_base,
@@ -725,7 +709,7 @@ class EvaluationPipeline:
             passed_gates=True,
             combined_score=combined,
             static_score=norm_static,
-            perf_score=perf_ratio,
+            perf_score=norm_perf,
             llm_score=norm_llm,
             build_time=clippy.elapsed_seconds,
             tests_passed=test.tests_passed,

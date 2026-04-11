@@ -81,7 +81,7 @@ def test_pipeline_full_pass(mock_clean, mock_clippy, mock_test, mock_judge, pipe
     assert result.passed_gates is True
     assert result.combined_score > 0
     assert result.static_score == 1.0  # no clippy warnings
-    assert result.perf_score == 1.0  # baseline ratio
+    assert result.perf_score == 0.5  # baseline: norm_perf = 1.0/2.0 = 0.5
 
 
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
@@ -248,3 +248,105 @@ def test_pipeline_enforces_evolve_block(mock_clean, mock_clippy, mock_fix, tmp_p
     assert pipeline._evolve_prefix is not None
     assert "EVOLVE-BLOCK-START" in pipeline._evolve_prefix
     assert "mod tests;" in pipeline._evolve_suffix
+
+
+# ---------------------------------------------------------------------------
+# Metrics normalization tests
+# ---------------------------------------------------------------------------
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_perf_score_is_norm_perf_not_raw_ratio(mock_clean, mock_clippy, mock_test, mock_judge, pipeline, candidate_file):
+    """perf_score should be norm_perf (clamped ratio/2), not the raw perf_ratio."""
+    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=2.0)
+    mock_test.return_value = MagicMock(success=True, tests_passed=3, tests_failed=0, elapsed_seconds=0.5)
+    mock_judge.return_value = MagicMock(combined_score=0.0)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    result = pipeline.evaluate(str(candidate_file))
+    # At baseline: perf_ratio=1.0, norm_perf=max(0, min(1, 1.0/2.0))=0.5
+    assert result.perf_score == 0.5
+    # NOT 1.0 (which would be the raw perf_ratio)
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_all_scores_bounded_zero_one(mock_clean, mock_clippy, mock_test, mock_judge, pipeline, candidate_file):
+    """All score fields in EvaluationResult should be in [0, 1]."""
+    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=2.0)
+    mock_test.return_value = MagicMock(success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0)
+    mock_judge.return_value = MagicMock(combined_score=0.9)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    result = pipeline.evaluate(str(candidate_file))
+    assert 0.0 <= result.static_score <= 1.0
+    assert 0.0 <= result.perf_score <= 1.0
+    assert 0.0 <= result.llm_score <= 1.0
+
+
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_static_score_perfect_when_no_warnings(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
+    """Zero clippy warnings should yield static_score=1.0 (perfect)."""
+    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    result = pipeline.evaluate(str(candidate_file))
+    assert result.static_score == 1.0
+
+
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_static_score_decreases_with_warnings(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
+    """More clippy warnings should lower static_score."""
+    mock_clippy.return_value = MagicMock(
+        success=True,
+        warnings=[{"code": "clippy::style"}] * 5,
+        warning_counts={"style": 5},
+        elapsed_seconds=1.0,
+    )
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    result = pipeline.evaluate(str(candidate_file))
+    assert 0.0 < result.static_score < 1.0
+
+
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_result_keeps_raw_counts_for_internal_use(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
+    """EvaluationResult still carries raw counts (tests_passed, clippy_warnings)
+    for internal logging, even though these should not go to OpenEvolve."""
+    mock_clippy.return_value = MagicMock(
+        success=True,
+        warnings=[{"code": "clippy::style"}] * 3,
+        warning_counts={"style": 3},
+        elapsed_seconds=1.5,
+    )
+    mock_test.return_value = MagicMock(success=True, tests_passed=7, tests_failed=0, elapsed_seconds=0.5)
+
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    result = pipeline.evaluate(str(candidate_file))
+    # Raw counts preserved in the dataclass
+    assert result.tests_passed == 7
+    assert result.tests_failed == 0
+    assert result.clippy_warnings == 3
+    assert result.build_time == 1.5

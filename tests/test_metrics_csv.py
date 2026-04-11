@@ -11,7 +11,7 @@ def _make_csv_logger(csv_path: Path):
     fields = [
         "generation", "combined_score", "passed_gates", "static_score",
         "perf_score", "llm_score", "clippy_warnings", "compile_time",
-        "binary_size", "tests_passed", "loc",
+        "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
     ]
     state = {"generation": 0}
 
@@ -39,6 +39,8 @@ def _metrics_dict(**overrides) -> dict:
         "compile_time": 2.0,
         "binary_size": 500_000.0,
         "tests_passed": 10.0,
+        "tests_failed": 0.0,
+        "build_time": 1.5,
         "loc": 42.0,
     }
     defaults.update(overrides)
@@ -108,7 +110,7 @@ def test_csv_all_fields_present(tmp_path):
     expected = {
         "generation", "combined_score", "passed_gates", "static_score",
         "perf_score", "llm_score", "clippy_warnings", "compile_time",
-        "binary_size", "tests_passed", "loc",
+        "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
     }
     assert set(reader.fieldnames) == expected
     assert all(rows[0][k] != "" for k in expected)
@@ -127,3 +129,153 @@ def test_csv_header_not_duplicated_on_append(tmp_path):
     # Two data rows plus the header = 3 non-empty lines
     lines = [l for l in raw.strip().splitlines() if l]
     assert len(lines) == 3
+
+
+# ---------------------------------------------------------------------------
+# Metrics normalization / splitting tests (evaluator.py.j2 boundary logic)
+# ---------------------------------------------------------------------------
+
+
+def _build_openevolve_metrics(result) -> dict:
+    """Replicate the metrics dict that evaluator.py.j2 returns to OpenEvolve.
+
+    This mirrors the template logic so we can test it without rendering Jinja2.
+    """
+    return {
+        "combined_score": result.combined_score / 2.0,
+        "static_score": result.static_score / 2.0,
+        "perf_score": result.perf_score,
+        "llm_score": result.llm_score / 2.0,
+        "compile_time": result.compile_time,
+        "binary_size": result.binary_size,
+        "loc": result.loc,
+    }
+
+
+def _build_csv_metrics(result, openevolve_metrics) -> dict:
+    """Replicate the csv_metrics dict from evaluator.py.j2."""
+    return {
+        **openevolve_metrics,
+        "passed_gates": int(result.passed_gates),
+        "clippy_warnings": result.clippy_warnings,
+        "tests_passed": result.tests_passed,
+        "tests_failed": result.tests_failed,
+        "build_time": result.build_time,
+    }
+
+
+def test_openevolve_metrics_exclude_raw_counts():
+    """Metrics returned to OpenEvolve must NOT contain raw counts."""
+    result = EvaluationResult(
+        passed_gates=True,
+        combined_score=0.8,
+        static_score=0.9,
+        perf_score=0.5,
+        llm_score=0.6,
+        build_time=3.5,
+        tests_passed=42,
+        tests_failed=2,
+        clippy_warnings=7,
+        binary_size=1.05,
+        compile_time=0.95,
+        loc=0.98,
+    )
+    metrics = _build_openevolve_metrics(result)
+    # These raw-count keys must NOT be in the dict returned to OpenEvolve
+    assert "tests_passed" not in metrics
+    assert "tests_failed" not in metrics
+    assert "clippy_warnings" not in metrics
+    assert "passed_gates" not in metrics
+    assert "build_time" not in metrics
+
+
+def test_openevolve_metrics_halve_bounded_scores():
+    """Scores naturally in [0,1] should be halved to centre around 0.5."""
+    result = EvaluationResult(
+        passed_gates=True,
+        combined_score=0.8,
+        static_score=1.0,   # perfect static
+        perf_score=0.5,      # baseline norm_perf
+        llm_score=0.7,
+        binary_size=1.0,
+        compile_time=1.0,
+        loc=1.0,
+    )
+    metrics = _build_openevolve_metrics(result)
+    assert metrics["combined_score"] == 0.4    # 0.8 / 2.0
+    assert metrics["static_score"] == 0.5      # 1.0 / 2.0
+    assert metrics["llm_score"] == 0.35        # 0.7 / 2.0
+    # perf_score is NOT halved (already a ratio centred at 0.5)
+    assert metrics["perf_score"] == 0.5
+
+
+def test_openevolve_metrics_pass_through_ratios():
+    """Ratio-based metrics (compile_time, binary_size, loc) pass through unchanged."""
+    result = EvaluationResult(
+        passed_gates=True,
+        combined_score=0.5,
+        static_score=0.8,
+        perf_score=0.5,
+        llm_score=0.0,
+        compile_time=1.2,    # 20% faster than baseline
+        binary_size=0.85,    # 15% larger than baseline
+        loc=1.1,             # 10% fewer LoC
+    )
+    metrics = _build_openevolve_metrics(result)
+    assert metrics["compile_time"] == 1.2
+    assert metrics["binary_size"] == 0.85
+    assert metrics["loc"] == 1.1
+
+
+def test_csv_metrics_include_everything():
+    """CSV metrics should contain all fields including raw counts."""
+    result = EvaluationResult(
+        passed_gates=True,
+        combined_score=0.8,
+        static_score=0.9,
+        perf_score=0.5,
+        llm_score=0.6,
+        build_time=2.5,
+        tests_passed=10,
+        tests_failed=1,
+        clippy_warnings=3,
+        binary_size=1.0,
+        compile_time=1.0,
+        loc=1.0,
+    )
+    oe_metrics = _build_openevolve_metrics(result)
+    csv_metrics = _build_csv_metrics(result, oe_metrics)
+
+    # All OpenEvolve metrics present
+    for key in oe_metrics:
+        assert key in csv_metrics
+
+    # Additional diagnostic fields present
+    assert csv_metrics["passed_gates"] == 1
+    assert csv_metrics["clippy_warnings"] == 3
+    assert csv_metrics["tests_passed"] == 10
+    assert csv_metrics["tests_failed"] == 1
+    assert csv_metrics["build_time"] == 2.5
+
+
+def test_openevolve_metrics_all_values_comparable_scale():
+    """All values returned to OpenEvolve should be in a comparable range,
+    roughly centred around 0.5-1.0, never dominating like raw counts."""
+    result = EvaluationResult(
+        passed_gates=True,
+        combined_score=0.8,
+        static_score=1.0,
+        perf_score=0.5,
+        llm_score=0.7,
+        build_time=5.0,
+        tests_passed=100,    # would dominate if included
+        tests_failed=0,
+        clippy_warnings=50,  # would dominate AND invert polarity if included
+        binary_size=1.1,
+        compile_time=0.9,
+        loc=1.05,
+    )
+    metrics = _build_openevolve_metrics(result)
+    # All values should be in a reasonable range (say 0 to 2)
+    for key, val in metrics.items():
+        assert 0.0 <= val <= 2.0, f"{key}={val} is out of comparable range"
