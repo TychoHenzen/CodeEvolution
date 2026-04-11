@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import sys
@@ -227,6 +228,7 @@ def run_evolution(
     project_path: Path,
     source_files: Path | list[Path],
     evaluator_path: Path,
+    checkpoint_path: str | None = None,
 ):
     """Run the evolutionary loop via OpenEvolve. Returns EvolutionResult.
 
@@ -239,8 +241,8 @@ def run_evolution(
             summaries are generated and a bundle is created with the first file
             as focus.
         evaluator_path: Path to the generated evaluator.py.
+        checkpoint_path: Optional path to a checkpoint directory to resume from.
     """
-    from openevolve.api import run_evolution as oe_run_evolution
     from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
 
     _patch_extract_diffs()
@@ -261,12 +263,14 @@ def run_evolution(
         return _run_single_file(
             config, config_path, project_path, source_files[0],
             evaluator_path, output_dir,
+            checkpoint_path=checkpoint_path,
         )
 
     # ---- Multi-file bundle path ----
     return _run_multi_file(
         config, config_path, project_path, source_files,
         evaluator_path, output_dir,
+        checkpoint_path=checkpoint_path,
     )
 
 
@@ -277,9 +281,12 @@ def _run_single_file(
     initial_program: Path,
     evaluator_path: Path,
     output_dir: Path,
+    checkpoint_path: str | None = None,
 ):
     """Single-file evolution flow (backward compatible)."""
-    from openevolve.api import run_evolution as oe_run_evolution
+    from openevolve.controller import OpenEvolve
+    from openevolve.config import load_config as oe_load_config
+    from openevolve.api import EvolutionResult
     from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
 
     # Save a backup of the original source before evolution starts.
@@ -312,14 +319,50 @@ def _run_single_file(
         config, output_dir, frozen_context=frozen_context,
     )
 
+    # Load OE config and create controller directly (instead of via
+    # openevolve.api.run_evolution) so we can pass checkpoint_path.
+    oe_config = oe_load_config(str(oe_config_path))
+
+    # Auto-disable cascade evaluation if the evaluator lacks stage functions
+    if oe_config.evaluator.cascade_evaluation:
+        with open(str(evaluator_path), "r") as f:
+            if "evaluate_stage1" not in f.read():
+                oe_config.evaluator.cascade_evaluation = False
+
     try:
-        result = oe_run_evolution(
-            initial_program=str(evolve_program),
-            evaluator=str(evaluator_path),
-            config=str(oe_config_path),
-            iterations=config.evolution.max_iterations,
+        controller = OpenEvolve(
+            initial_program_path=str(evolve_program),
+            evaluation_file=str(evaluator_path),
+            config=oe_config,
             output_dir=str(output_dir),
-            cleanup=False,
+        )
+
+        best_program = asyncio.run(controller.run(
+            iterations=config.evolution.max_iterations,
+            checkpoint_path=checkpoint_path,
+        ))
+
+        # Build result
+        best_score = 0.0
+        metrics: dict = {}
+        best_code = ""
+
+        if best_program:
+            best_code = best_program.code
+            metrics = best_program.metrics or {}
+            if "combined_score" in metrics:
+                best_score = metrics["combined_score"]
+            elif metrics:
+                numeric_metrics = [v for v in metrics.values() if isinstance(v, (int, float))]
+                if numeric_metrics:
+                    best_score = sum(numeric_metrics) / len(numeric_metrics)
+
+        result = EvolutionResult(
+            best_program=best_program,
+            best_score=best_score,
+            best_code=best_code,
+            metrics=metrics,
+            output_dir=str(output_dir),
         )
     finally:
         # Restore the original source file so the project is never left
@@ -342,9 +385,12 @@ def _run_multi_file(
     source_files: list[Path],
     evaluator_path: Path,
     output_dir: Path,
+    checkpoint_path: str | None = None,
 ):
     """Multi-file evolution flow using bundles and summaries."""
-    from openevolve.api import run_evolution as oe_run_evolution
+    from openevolve.controller import OpenEvolve
+    from openevolve.config import load_config as oe_load_config
+    from openevolve.api import EvolutionResult
     from codeevolve.summary import summarize_files
     from codeevolve.bundler import create_bundle, create_workspace_bundle, extract_focus
     from codeevolve.crate_graph import detect_workspace
@@ -387,14 +433,50 @@ def _run_multi_file(
     # the bundle's CONTEXT section provides read-only context to the LLM.
     oe_config_path = build_openevolve_config_yaml(config, output_dir, frozen_context="")
 
+    # Load OE config and create controller directly (instead of via
+    # openevolve.api.run_evolution) so we can pass checkpoint_path.
+    oe_config = oe_load_config(str(oe_config_path))
+
+    # Auto-disable cascade evaluation if the evaluator lacks stage functions
+    if oe_config.evaluator.cascade_evaluation:
+        with open(str(evaluator_path), "r") as f:
+            if "evaluate_stage1" not in f.read():
+                oe_config.evaluator.cascade_evaluation = False
+
     try:
-        result = oe_run_evolution(
-            initial_program=str(bundle_path),
-            evaluator=str(evaluator_path),
-            config=str(oe_config_path),
-            iterations=config.evolution.max_iterations,
+        controller = OpenEvolve(
+            initial_program_path=str(bundle_path),
+            evaluation_file=str(evaluator_path),
+            config=oe_config,
             output_dir=str(output_dir),
-            cleanup=False,
+        )
+
+        best_program = asyncio.run(controller.run(
+            iterations=config.evolution.max_iterations,
+            checkpoint_path=checkpoint_path,
+        ))
+
+        # Build result
+        best_score = 0.0
+        metrics: dict = {}
+        best_code = ""
+
+        if best_program:
+            best_code = best_program.code
+            metrics = best_program.metrics or {}
+            if "combined_score" in metrics:
+                best_score = metrics["combined_score"]
+            elif metrics:
+                numeric_metrics = [v for v in metrics.values() if isinstance(v, (int, float))]
+                if numeric_metrics:
+                    best_score = sum(numeric_metrics) / len(numeric_metrics)
+
+        result = EvolutionResult(
+            best_program=best_program,
+            best_score=best_score,
+            best_code=best_code,
+            metrics=metrics,
+            output_dir=str(output_dir),
         )
     finally:
         # Restore ALL original source files

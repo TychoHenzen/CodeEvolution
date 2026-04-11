@@ -159,19 +159,36 @@ def test_run_multi_file_uses_workspace_bundle(sample_workspace, tmp_path):
     # Filter to only files with EVOLVE-BLOCK markers
     marked = [f for f in source_files if "EVOLVE-BLOCK-START" in f.read_text()]
 
-    # Patch at SOURCE modules — _run_multi_file uses local imports, so
-    # the from-import will pick up whatever is in the source module at
-    # call time.
-    with patch("openevolve.api.run_evolution") as mock_oe, \
+    # Create a mock evaluator file so the cascade-evaluation check can read it
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    eval_file = config_path.parent / "evaluator.py"
+    eval_file.write_text("def evaluate(path): return {}", encoding="utf-8")
+
+    # Build a mock Program that controller.run() will return
+    mock_program = MagicMock()
+    mock_program.code = "pub fn improved() {}"
+    mock_program.metrics = {"combined_score": 0.85}
+
+    # Mock the OpenEvolve controller: its constructor returns an instance
+    # whose async run() resolves to the mock program.
+    import asyncio
+
+    async def _fake_run(**kwargs):
+        return mock_program
+
+    mock_controller = MagicMock()
+    mock_controller.run = _fake_run
+
+    with patch("openevolve.controller.OpenEvolve", return_value=mock_controller) as mock_oe_cls, \
          patch("codeevolve.bundler.create_workspace_bundle") as mock_ws_bundle, \
          patch("codeevolve.summary.summarize_files") as mock_summarize:
         mock_ws_bundle.return_value = "// bundle content"
         mock_summarize.return_value = {}
-        mock_oe.return_value = MagicMock(best_code="pub fn improved() {}")
 
         # This should detect workspace and use create_workspace_bundle
         _run_multi_file(
             config, config_path, sample_workspace, marked,
-            config_path.parent / "evaluator.py", output_dir,
+            eval_file, output_dir,
         )
         mock_ws_bundle.assert_called_once()
+        mock_oe_cls.assert_called_once()
