@@ -416,9 +416,12 @@ class EvaluationPipeline:
 
         # Lazily capture the hash of the very first (original) program so we
         # can detect "LLM returned the input verbatim" across all iterations.
+        # NOTE: We do NOT add the original hash to _seen_hashes here — the
+        # first evaluate() call IS the initial/seed program and must be
+        # allowed through so OpenEvolve gets a real baseline score.  The hash
+        # is added to _seen_hashes at line ~479 like any other candidate.
         if self._original_hash is None:
             self._original_hash = self._code_hash(original_code)
-            self._seen_hashes.add(self._original_hash)
 
         # Read candidate and extract the evolve content
         raw_candidate = Path(program_path).read_text(encoding="utf-8")
@@ -513,11 +516,11 @@ class EvaluationPipeline:
     def _evaluate_candidate(self) -> EvaluationResult:
         """Run the unified pipeline on the candidate already written to disk.
 
-        Single-build flow:
-        1. cargo clean + cargo clippy --release  →  build gate, clippy, compile time, release artifacts
-        2. cargo test                            →  test gate
-        3. cargo bench / custom benchmark        →  reuses release artifacts
-        4. UPX + binary size                     →  from release artifacts already on disk
+        Single-build flow (incremental after baseline):
+        1. cargo clippy --release  →  build gate, clippy, release artifacts (incremental)
+        2. cargo test              →  test gate
+        3. cargo build --release   →  link binary (if measuring binary size)
+        4. UPX + binary size       →  from release artifacts already on disk
         """
         project_path = self.project_path
         cargo = self.config.rust.cargo_path
@@ -658,6 +661,8 @@ class EvaluationPipeline:
         )
 
         # --- Layer 3: Performance ---
+        w_static = cfg.fitness.static_analysis_weight
+        w_perf = cfg.fitness.performance_weight
         loc = measure_loc(self.focus_file)
         binary_size = 0
         bench_score: Optional[float] = None
@@ -679,8 +684,28 @@ class EvaluationPipeline:
             else:
                 logger.warning("Release link failed: %s", link.error_output[:200])
 
-        # Benchmark (reuses release artifacts — cargo bench builds in release by default)
+        is_baseline = self._baseline_loc is None
+        # Benchmark — only run for baseline and top-quartile candidates.
+        # cargo bench is typically expensive (minutes), so we gate it the same
+        # way LLM judgment is gated to avoid wasting time on mediocre candidates.
+        run_bench = False
         if cfg.benchmarks.custom_command:
+            if is_baseline:
+                run_bench = True
+            else:
+                # Compute preliminary score from static + LOC + binary to decide
+                prelim_loc_ratio = self._baseline_loc / loc if self._baseline_loc and loc else 1.0
+                prelim_binary_ratio = 1.0
+                if self._baseline_binary_size and binary_size:
+                    prelim_binary_ratio = self._baseline_binary_size / binary_size
+                prelim_perf = statistics.mean([prelim_loc_ratio, prelim_binary_ratio])
+                prelim_norm_perf = max(0.0, min(1.0, prelim_perf / 2.0))
+                prelim_score = (w_static * norm_static + w_perf * prelim_norm_perf) / (w_static + w_perf)
+                run_bench = self._is_top_quartile(prelim_score)
+                if not run_bench:
+                    logger.info("Layer 3: skipping benchmark (not top quartile)")
+
+        if run_bench:
             bench_result = run_user_benchmark(
                 cfg.benchmarks.custom_command,
                 project_path,
@@ -689,7 +714,7 @@ class EvaluationPipeline:
             bench_score = bench_result.score
 
         # Set baseline on first evaluation
-        if self._baseline_loc is None:
+        if is_baseline:
             self._baseline_loc = loc
             self._baseline_compile_time = compile_time
             self._baseline_binary_size = binary_size
@@ -703,10 +728,13 @@ class EvaluationPipeline:
         loc_ratio = self._baseline_loc / loc if self._baseline_loc and loc else 1.0
         perf_ratios = [loc_ratio]
 
+        # Always include all *configured* dimensions so perf_ratios has a
+        # consistent number of components across evaluations.  Dimensions
+        # that weren't measured this round contribute 1.0 (neutral).
         compile_ratio = 1.0
         if cfg.benchmarks.measure_compile_time:
-            if self._baseline_compile_time and compile_time:
-                compile_ratio = self._baseline_compile_time / compile_time
+            # Only meaningful for clean builds (baseline); incremental times
+            # aren't comparable, so non-baseline gets the neutral 1.0 default.
             perf_ratios.append(compile_ratio)
 
         binary_ratio = 1.0
@@ -715,11 +743,11 @@ class EvaluationPipeline:
                 binary_ratio = self._baseline_binary_size / binary_size
             perf_ratios.append(binary_ratio)
 
-        if bench_score is not None:
-            if self._baseline_bench and self._baseline_bench > 0:
-                perf_ratios.append(bench_score / self._baseline_bench)
-            else:
-                perf_ratios.append(1.0)
+        bench_ratio = 1.0
+        if cfg.benchmarks.custom_command:
+            if bench_score is not None and self._baseline_bench and self._baseline_bench > 0:
+                bench_ratio = bench_score / self._baseline_bench
+            perf_ratios.append(bench_ratio)
 
         perf_ratio = statistics.mean(perf_ratios) if perf_ratios else 1.0
         # Map to [0, 1]: baseline (ratio=1.0) -> 0.5, 2x improvement -> 1.0
@@ -732,8 +760,6 @@ class EvaluationPipeline:
         )
 
         # --- Pre-LLM combined score ---
-        w_static = cfg.fitness.static_analysis_weight
-        w_perf = cfg.fitness.performance_weight
         pre_llm = (w_static * norm_static + w_perf * norm_perf) / (w_static + w_perf)
         self._score_history.append(pre_llm)
 

@@ -82,7 +82,7 @@ class FitnessConfig:
 class BenchmarksConfig:
     measure_compile_time: bool = True
     measure_binary_size: bool = True
-    custom_command: Optional[str] = "cargo bench"
+    custom_command: Optional[str] = None
     custom_command_score_regex: Optional[str] = None
     binary_package: Optional[str] = None
     upx_path: Optional[str] = None

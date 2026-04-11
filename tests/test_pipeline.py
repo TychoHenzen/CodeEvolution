@@ -115,10 +115,36 @@ def test_pipeline_skips_llm_if_not_top_quartile(mock_clean, mock_clippy, mock_te
 # Deduplication tests
 # ---------------------------------------------------------------------------
 
-def test_pipeline_rejects_candidate_identical_to_original(pipeline, tmp_path):
-    """Candidate with same code as the source file is rejected as duplicate."""
-    dup_file = tmp_path / "dup.rs"
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_initial_program_not_dedup_rejected(mock_clean, mock_clippy, mock_fix, pipeline, tmp_path):
+    """The first evaluation (initial/seed program, identical to source) must not
+    be rejected as a duplicate — OpenEvolve needs a real baseline score."""
+    mock_clippy.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
+
+    dup_file = tmp_path / "initial.rs"
     dup_file.write_text("fn main() {}")  # same as source_file fixture
+    result = pipeline.evaluate(str(dup_file))
+    assert "duplicate" not in (result.error or "")
+
+
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_rejects_candidate_identical_to_original(mock_clean, mock_clippy, mock_fix, pipeline, tmp_path):
+    """After the initial evaluation, a candidate identical to the original is
+    rejected as a duplicate."""
+    mock_clippy.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
+
+    # First call — the initial/seed evaluation (must succeed, not dedup)
+    initial = tmp_path / "initial.rs"
+    initial.write_text("fn main() {}")
+    pipeline.evaluate(str(initial))
+
+    # Second call with identical code — should be rejected
+    dup_file = tmp_path / "dup.rs"
+    dup_file.write_text("fn main() {}")
     result = pipeline.evaluate(str(dup_file))
     assert result.passed_gates is False
     assert result.combined_score == 0.0
@@ -160,12 +186,19 @@ def test_pipeline_accepts_novel_candidates(mock_clean, mock_clippy, mock_fix, pi
         assert "duplicate" not in (result.error or "")
 
 
-def test_pipeline_tracks_consecutive_duplicates(pipeline, tmp_path):
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_tracks_consecutive_duplicates(mock_clean, mock_clippy, mock_fix, pipeline, tmp_path):
     """Consecutive duplicate counter increments correctly."""
+    mock_clippy.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
+
     dup_file = tmp_path / "dup.rs"
     dup_file.write_text("fn main() {}")  # same as original
 
-    for i in range(3):
+    # First call is the initial/seed evaluation (not a duplicate).
+    # The subsequent 3 calls are all duplicates.
+    for _ in range(4):
         pipeline.evaluate(str(dup_file))
 
     assert pipeline._consecutive_duplicates == 3
@@ -305,6 +338,7 @@ def test_static_score_perfect_when_no_warnings(mock_clean, mock_clippy, mock_tes
 
     pipeline.config.benchmarks.binary_package = None
     pipeline.config.benchmarks.custom_command = None
+    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
 
     result = pipeline.evaluate(str(candidate_file))
     assert result.static_score == 1.0
@@ -325,6 +359,7 @@ def test_static_score_decreases_with_warnings(mock_clean, mock_clippy, mock_test
 
     pipeline.config.benchmarks.binary_package = None
     pipeline.config.benchmarks.custom_command = None
+    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
 
     result = pipeline.evaluate(str(candidate_file))
     assert 0.0 < result.static_score < 1.0
@@ -346,6 +381,7 @@ def test_result_keeps_raw_counts_for_internal_use(mock_clean, mock_clippy, mock_
 
     pipeline.config.benchmarks.binary_package = None
     pipeline.config.benchmarks.custom_command = None
+    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
 
     result = pipeline.evaluate(str(candidate_file))
     # Raw counts preserved in the dataclass
@@ -663,6 +699,7 @@ def test_passing_candidate_includes_clippy_artifacts(mock_clean, mock_clippy, mo
 
     pipeline.config.benchmarks.binary_package = None
     pipeline.config.benchmarks.custom_command = None
+    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
 
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is True
@@ -682,14 +719,26 @@ def test_passing_candidate_no_warnings_has_empty_artifacts(mock_clean, mock_clip
 
     pipeline.config.benchmarks.binary_package = None
     pipeline.config.benchmarks.custom_command = None
+    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
 
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is True
     assert result.artifacts == {}
 
 
-def test_duplicate_candidate_has_empty_artifacts(pipeline, tmp_path):
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_duplicate_candidate_has_empty_artifacts(mock_clean, mock_clippy, mock_fix, pipeline, tmp_path):
     """Duplicate candidate rejection should have empty artifacts."""
+    mock_clippy.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
+
+    # Initial eval to register the hash
+    initial = tmp_path / "initial.rs"
+    initial.write_text("fn main() {}")
+    pipeline.evaluate(str(initial))
+
+    # Duplicate should be rejected with empty artifacts
     dup = tmp_path / "dup.rs"
     dup.write_text("fn main() {}")  # same as source_file fixture
     result = pipeline.evaluate(str(dup))

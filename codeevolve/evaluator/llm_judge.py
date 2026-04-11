@@ -34,7 +34,7 @@ Think step by step about the code quality, then provide your scores as a JSON ob
 {code}
 ```
 
-Respond with your reasoning first, then a JSON code block containing only the dimension scores. Example:
+Respond with a JSON code block containing only the dimension scores. Example:
 ```json
 {{{", ".join(f'"{d}": 0.65' for d in dimensions)}}}
 ```"""

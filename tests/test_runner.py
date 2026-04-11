@@ -6,6 +6,7 @@ import pytest
 from codeevolve.config import load_config
 from codeevolve.runner import (
     build_openevolve_config_yaml,
+    _clear_root_handlers,
     _normalize_llm_diffs,
     _run_multi_file,
     _run_single_file,
@@ -82,10 +83,150 @@ class TestNormalizeLlmDiffs:
         assert result.count("<<<<<<< SEARCH") == 2
         assert result.count(">>>>>>> REPLACE") == 2
 
+    def test_outer_backtick_fence_stripped(self):
+        """Entire response wrapped in ``` ... ``` should be unwrapped."""
+        text = (
+            "```\n"
+            "<<<<<<< SEARCH\n"
+            "fn foo() {}\n"
+            "=======\n"
+            "fn foo() { bar(); }\n"
+            ">>>>>>> REPLACE\n"
+            "```"
+        )
+        result = _normalize_llm_diffs(text)
+        assert "<<<<<<< SEARCH" in result
+        assert "fn foo() {}" in result
+        assert "fn foo() { bar(); }" in result
+        assert not result.startswith("```")
+        assert not result.rstrip().endswith("```")
+
+    def test_outer_backtick_fence_with_lang_stripped(self):
+        """Outer fence with language tag (```rust) should also be unwrapped."""
+        text = (
+            "```rust\n"
+            "<<<<<<< SEARCH\n"
+            "let x = 1;\n"
+            "=======\n"
+            "let x = 2;\n"
+            ">>>>>>> REPLACE\n"
+            "```"
+        )
+        result = _normalize_llm_diffs(text)
+        assert "<<<<<<< SEARCH" in result
+        assert not result.startswith("```")
+
+    def test_inner_backtick_fences_stripped(self):
+        """Backtick fences immediately inside SEARCH/REPLACE blocks are removed."""
+        text = (
+            "<<<<<<< SEARCH\n"
+            "```text\n"
+            "Initial implementation of the evolvable Rust code section.\n"
+            "```\n"
+            "=======\n"
+            "```text\n"
+            "1. Replaced the store catalog Vec with a fixed array.\n"
+            "```\n"
+            ">>>>>>> REPLACE"
+        )
+        result = _normalize_llm_diffs(text)
+        assert "```" not in result
+        assert "<<<<<<< SEARCH" in result
+        assert "Initial implementation" in result
+        assert "Replaced the store catalog" in result
+        assert ">>>>>>> REPLACE" in result
+
+    def test_inner_rust_fences_stripped(self):
+        """```rust fences inside SEARCH/REPLACE blocks are removed."""
+        text = (
+            "<<<<<<< SEARCH\n"
+            "```rust\n"
+            "fn foo() {}\n"
+            "```\n"
+            "=======\n"
+            "```rust\n"
+            "fn foo() { bar(); }\n"
+            "```\n"
+            ">>>>>>> REPLACE"
+        )
+        result = _normalize_llm_diffs(text)
+        assert "```" not in result
+        assert "fn foo() {}" in result
+        assert "fn foo() { bar(); }" in result
+
+    def test_mixed_inner_fences_multiple_blocks(self):
+        """Multiple blocks with inner fences should all be cleaned."""
+        text = (
+            "<<<<<<< SEARCH\n"
+            "```rust\n"
+            "fn a() {}\n"
+            "```\n"
+            "=======\n"
+            "```rust\n"
+            "fn a() { x(); }\n"
+            "```\n"
+            ">>>>>>> REPLACE\n"
+            "\n"
+            "<<<<<<< SEARCH\n"
+            "```text\n"
+            "Old description.\n"
+            "```\n"
+            "=======\n"
+            "```text\n"
+            "New description.\n"
+            "```\n"
+            ">>>>>>> REPLACE"
+        )
+        result = _normalize_llm_diffs(text)
+        assert "```" not in result
+        assert result.count("<<<<<<< SEARCH") == 2
+        assert result.count(">>>>>>> REPLACE") == 2
+        assert "fn a() {}" in result
+        assert "Old description." in result
+        assert "New description." in result
+
     def test_no_diffs_returns_text_unchanged(self):
         """Plain text with no diff patterns should pass through."""
         text = "Just some commentary about the code."
         assert _normalize_llm_diffs(text) == text
+
+
+class TestClearRootHandlers:
+    """Tests for _clear_root_handlers."""
+
+    def test_removes_all_root_handlers(self):
+        """All handlers on the root logger are removed."""
+        import logging
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            root.addHandler(logging.StreamHandler())
+            root.addHandler(logging.StreamHandler())
+            assert len(root.handlers) >= 2
+            _clear_root_handlers()
+            assert root.handlers == []
+        finally:
+            # Restore original handlers
+            root.handlers = original_handlers
+
+    def test_prevents_handler_accumulation(self):
+        """Simulates the rotation loop: clear → add → clear → add stays at 2."""
+        import logging
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        try:
+            _clear_root_handlers()
+            # Simulate OpenEvolve _setup_logging
+            root.addHandler(logging.StreamHandler())
+            root.addHandler(logging.StreamHandler())
+            assert len(root.handlers) == 2
+            # Simulate second slot: clear + re-add
+            _clear_root_handlers()
+            root.addHandler(logging.StreamHandler())
+            root.addHandler(logging.StreamHandler())
+            assert len(root.handlers) == 2  # NOT 4
+        finally:
+            root.handlers = original_handlers
 
 
 class TestFindLatestCheckpoint:

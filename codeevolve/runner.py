@@ -18,17 +18,52 @@ logger = logging.getLogger(__name__)
 def _normalize_llm_diffs(text: str) -> str:
     """Rewrite common malformed diff formats into the canonical markers.
 
-    Small LLMs (e.g. Qwen-7B) frequently emit markdown-style diffs instead of
-    the ``<<<<<<< SEARCH`` / ``=======`` / ``>>>>>>> REPLACE`` format that
-    OpenEvolve expects.  This function rewrites the two most common variants
-    so that ``extract_diffs`` can parse them.
+    LLMs frequently emit variations of the ``<<<<<<< SEARCH`` / ``=======`` /
+    ``>>>>>>> REPLACE`` format that OpenEvolve expects.  This function
+    normalises the most common deviations so that ``extract_diffs`` can parse
+    them.
 
     Handled variants
     ----------------
-    1. ``#### SEARCH`` … ````rust`` code ```` … ``#### REPLACE`` … ````rust`` code ````
-    2. ``SEARCH`` / ``REPLACE`` as standalone lines with fenced code blocks
+    1. Outer backtick wrapping — entire response fenced in ```` ``` … ``` ````
+    2. Inner backtick fences — ```` ```rust ```` / ```` ``` ```` immediately
+       inside SEARCH/REPLACE blocks
+    3. Markdown-heading markers — ``#### SEARCH`` … ``#### REPLACE`` with
+       fenced code blocks
     """
-    # Pattern: markdown headers with fenced code blocks
+
+    # --- Pass 1: strip outer backtick fence wrapping the whole response ------
+    # e.g.  ```\n<<<<<<< SEARCH\n…\n>>>>>>> REPLACE\n```
+    outer = re.match(r"^```\w*\n(.*)\n```\s*$", text, re.DOTALL)
+    if outer and "<<<<<<< SEARCH" in outer.group(1):
+        text = outer.group(1)
+
+    # --- Pass 2: strip backtick fences immediately adjacent to markers -------
+    # Handles LLMs that put ```rust / ``` inside the SEARCH/REPLACE blocks.
+    lines = text.split("\n")
+    filtered: list[str] = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        is_fence = bool(re.match(r"^```\w*$", stripped))
+
+        if is_fence:
+            # Opening fence right after <<<<<<< SEARCH or =======
+            prev = filtered[-1].strip() if filtered else ""
+            if prev in ("<<<<<<< SEARCH", "======="):
+                i += 1
+                continue
+            # Closing fence right before ======= or >>>>>>> REPLACE
+            next_s = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if next_s in ("=======", ">>>>>>> REPLACE"):
+                i += 1
+                continue
+
+        filtered.append(lines[i])
+        i += 1
+    text = "\n".join(filtered)
+
+    # --- Pass 3: rewrite markdown-heading style diffs ------------------------
     # e.g.  #### SEARCH\n```rust\ncode\n```\n\n#### REPLACE\n```rust\ncode\n```
     md_pattern = re.compile(
         r"#{1,6}\s*SEARCH\s*\n"       # #### SEARCH
@@ -66,6 +101,21 @@ def build_openevolve_config_yaml(
     with open(yaml_path, "w") as f:
         yaml.dump(oe_dict, f, default_flow_style=False, sort_keys=False)
     return yaml_path
+
+
+def _clear_root_handlers() -> None:
+    """Remove all handlers from the root logger.
+
+    OpenEvolve's ``_setup_logging`` adds a ``FileHandler`` and a
+    ``StreamHandler`` to the root logger each time a controller is
+    created.  When the rotation loop creates a new controller per slot,
+    handlers accumulate and every log line is printed N times by slot N.
+    Calling this before each slot resets the root logger to a clean state.
+    """
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        handler.close()
+        root.removeHandler(handler)
 
 
 def _patch_logging_utf8() -> None:
@@ -111,17 +161,17 @@ def _patch_feature_dimension_defaults() -> None:
 
 
 def _patch_extract_diffs() -> None:
-    """Monkey-patch OpenEvolve's extract_diffs to normalise markdown diffs."""
+    """Monkey-patch OpenEvolve's extract_diffs to normalise LLM diffs.
+
+    Always normalises before extraction — backtick fences inside canonical
+    markers produce regex matches whose content doesn't match the actual
+    source, so "try original first" is not safe.
+    """
     from openevolve.utils import code_utils
 
     _original = code_utils.extract_diffs
 
     def _patched(diff_text: str, diff_pattern: str = r"<<<<<<< SEARCH\n(.*?)=======\n(.*?)>>>>>>> REPLACE") -> List[Tuple[str, str]]:
-        # Try the original pattern first.
-        result = _original(diff_text, diff_pattern)
-        if result:
-            return result
-        # Normalise markdown-style diffs and retry.
         normalised = _normalize_llm_diffs(diff_text)
         return _original(normalised, diff_pattern)
 
@@ -556,6 +606,12 @@ def run_evolution_with_rotation(
             # Regenerate evaluator.py so the pipeline focus file matches the
             # source file assigned to this slot.
             regenerate_evaluator(project_path, config_path, focus_file=source_file)
+
+            # Clear root logger handlers to prevent duplication.
+            # OpenEvolve's _setup_logging() appends new handlers without
+            # removing old ones, so each slot would otherwise add another
+            # pair (file + console), causing N-fold log duplication.
+            _clear_root_handlers()
 
             result = _run_single_file(
                 slot_config,

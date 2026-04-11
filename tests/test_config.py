@@ -163,7 +163,7 @@ exclude_globs:
 def test_benchmarks_new_fields_defaults():
     """BenchmarksConfig new fields have correct defaults."""
     config = load_config()
-    assert config.benchmarks.custom_command == "cargo bench"
+    assert config.benchmarks.custom_command is None
     assert config.benchmarks.binary_package is None
     assert config.benchmarks.upx_path is None
     assert config.benchmarks.upx_args == ["--best", "--force"]
