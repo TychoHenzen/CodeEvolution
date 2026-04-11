@@ -208,3 +208,74 @@ exclude_globs: null
     config = load_config(config_path)
     assert config.include_globs == ["src/**/*.rs"]
     assert config.exclude_globs == []
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint/resume and tech-debt-weighted evolution fields
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_and_tech_debt_defaults():
+    """New EvolutionConfig fields have correct default values."""
+    config = load_config()
+    assert config.evolution.checkpoint_interval == 10
+    assert config.evolution.tech_debt_ledger == ""
+    assert config.evolution.top_n_files == 20
+    assert config.evolution.prod_only is True
+
+
+def test_checkpoint_and_tech_debt_override(tmp_path: Path):
+    """New evolution fields can be overridden via YAML."""
+    yaml_content = """
+evolution:
+  checkpoint_interval: 25
+  tech_debt_ledger: "TECH_DEBT_LEDGER.md"
+  top_n_files: 10
+  prod_only: false
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.evolution.checkpoint_interval == 25
+    assert config.evolution.tech_debt_ledger == "TECH_DEBT_LEDGER.md"
+    assert config.evolution.top_n_files == 10
+    assert config.evolution.prod_only is False
+    # non-overridden evolution fields keep their defaults
+    assert config.evolution.max_iterations == 500
+
+
+def test_checkpoint_interval_in_openevolve_dict():
+    """checkpoint_interval is included in the OpenEvolve dict."""
+    config = load_config()
+    oe_dict = config.to_openevolve_dict()
+    assert "checkpoint_interval" in oe_dict
+    assert oe_dict["checkpoint_interval"] == 10
+
+
+def test_tech_debt_fields_not_in_openevolve_dict():
+    """tech_debt_ledger, top_n_files, prod_only are NOT passed to OpenEvolve."""
+    config = load_config()
+    oe_dict = config.to_openevolve_dict()
+    assert "tech_debt_ledger" not in oe_dict
+    assert "top_n_files" not in oe_dict
+    assert "prod_only" not in oe_dict
+
+
+def test_backward_compat_yaml_without_new_fields(tmp_path: Path):
+    """YAML that omits the new evolution fields still loads with correct defaults."""
+    yaml_content = """
+evolution:
+  max_iterations: 200
+  population_size: 50
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    # Explicitly set fields respected
+    assert config.evolution.max_iterations == 200
+    assert config.evolution.population_size == 50
+    # New fields fall back to dataclass defaults
+    assert config.evolution.checkpoint_interval == 10
+    assert config.evolution.tech_debt_ledger == ""
+    assert config.evolution.top_n_files == 20
+    assert config.evolution.prod_only is True

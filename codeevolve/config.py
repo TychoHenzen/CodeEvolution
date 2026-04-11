@@ -39,12 +39,17 @@ class EvolutionConfig:
     migration_interval: int = 20
     diff_based_evolution: bool = False
     max_fix_attempts: int = 4  # LLM retry attempts on build/test failure
+    checkpoint_interval: int = 10  # iterations between checkpoints
+    tech_debt_ledger: str = ""  # path to TECH_DEBT_LEDGER.md relative to project root (empty = disabled)
+    top_n_files: int = 20  # how many worst prod files to evolve
+    prod_only: bool = True  # filter ledger to prod files only
 
 
 @dataclass
 class RustConfig:
     cargo_path: str = "cargo"
     target_dir: Optional[str] = None
+    jobs: Optional[int] = None  # -j flag: limit parallel cargo compilation jobs
     test_args: list[str] = field(default_factory=list)
     clippy_args: list[str] = field(default_factory=list)
 
@@ -106,7 +111,7 @@ class ClaudeConfig:
 
 @dataclass
 class CodeEvolveConfig:
-    provider: str = "local"  # "local" (llama-server), "codex", or "claude"
+    provider: str = "local"  # "local", "codex", "claude", or "mixed" (codex+claude)
     llama_server: LlamaServerConfig = field(default_factory=LlamaServerConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
@@ -124,6 +129,9 @@ class CodeEvolveConfig:
             return f"http://localhost:{self.codex.proxy_port}/v1"
         if self.provider == "claude":
             return f"http://localhost:{self.claude.proxy_port}/v1"
+        if self.provider == "mixed":
+            from codeevolve.mixed_proxy import MIXED_PROXY_PORT
+            return f"http://localhost:{MIXED_PROXY_PORT}/v1"
         return self.llama_server.api_base
 
     @property
@@ -132,6 +140,8 @@ class CodeEvolveConfig:
             return self.codex.model
         if self.provider == "claude":
             return self.claude.model
+        if self.provider == "mixed":
+            return self.codex.model  # primary; both listed in to_openevolve_dict
         return self.llama_server.model_name
 
     def to_openevolve_dict(self, frozen_context: str = "") -> dict:
@@ -197,6 +207,7 @@ class CodeEvolveConfig:
 
         return {
             "max_iterations": self.evolution.max_iterations,
+            "checkpoint_interval": self.evolution.checkpoint_interval,
             "diff_based_evolution": diff_mode,
             "max_code_length": 200000,
             "file_suffix": ".rs",
@@ -208,6 +219,9 @@ class CodeEvolveConfig:
                 "api_base": self.api_base,
                 "api_key": "no-key",
                 "models": [
+                    {"name": self.codex.model, "weight": 0.5},
+                    {"name": self.claude.model, "weight": 0.5},
+                ] if self.provider == "mixed" else [
                     {"name": self.model_name, "weight": 1.0},
                 ],
                 "temperature": 0.7,
@@ -229,7 +243,7 @@ class CodeEvolveConfig:
                 "log_prompts": True,
             },
             "evaluator": {
-                "timeout": 900,
+                "timeout": 6000,
                 "parallel_evaluations": 1,
             },
             "early_stopping_patience": 60,

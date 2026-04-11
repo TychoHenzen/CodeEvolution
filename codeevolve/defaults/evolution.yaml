@@ -1,7 +1,7 @@
 # CodeEvolution default configuration
 # All fields have sensible defaults for Rust + llama.cpp on RTX 4060 (8GB VRAM)
 
-# Provider: "local" for llama-server, "codex" for OpenAI Codex CLI, "claude" for Claude Code CLI
+# Provider: "local", "codex", "claude", or "mixed" (randomly alternates codex + claude)
 provider: "codex"
 
 # Glob patterns controlling which Rust source files are included in evolution
@@ -40,10 +40,15 @@ evolution:
   migration_interval: 20
   diff_based_evolution: true
   max_fix_attempts: 4
+  checkpoint_interval: 10
+  tech_debt_ledger: ""
+  top_n_files: 20
+  prod_only: true
 
 rust:
   cargo_path: "cargo"
   target_dir: null
+  jobs: 4  # limit parallel cargo jobs (-j N), null = cargo default (num CPUs)
   test_args: []
   clippy_args: []
 
