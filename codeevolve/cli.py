@@ -36,6 +36,12 @@ from codeevolve.claude_proxy import ClaudeProxy
 from codeevolve.mixed_proxy import MixedProxy
 
 
+def _read_text_and_line_count(path: Path) -> tuple[str, int]:
+    """Read a text file and return its content plus a minimum-1 line count."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return text, max(1, len(text.splitlines()))
+
+
 @click.group()
 @click.version_option(package_name="codeevolve")
 def main():
@@ -232,7 +238,13 @@ def run(config_path: Path, fresh: bool):
     click.echo()
 
     rs_files = discover_rs_files(project_path, config.include_globs, config.exclude_globs)
-    marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text(encoding="utf-8")]
+    marked_files = []
+    marked_file_lengths: dict[str, int] = {}
+    for f in rs_files:
+        text, line_count = _read_text_and_line_count(f)
+        if "EVOLVE-BLOCK-START" in text:
+            marked_files.append(f)
+            marked_file_lengths[f.relative_to(project_path).as_posix()] = line_count
 
     if not marked_files:
         click.echo("Error: No files with EVOLVE-BLOCK markers found. Run 'codeevolve init' first.", err=True)
@@ -274,6 +286,7 @@ def run(config_path: Path, fresh: bool):
 
             # Apply impact weighting: priority = debt_score * (1 + reverse_dep_count)
             weighted_entries = []
+            weighted_lengths: dict[str, int] = {}
             for entry in entries:
                 dep_count = reverse_deps.get(entry.file_path, 0)
                 weighted_score = entry.combined_score * (1 + dep_count)
@@ -293,8 +306,10 @@ def run(config_path: Path, fresh: bool):
                 full_path = project_path / entry.file_path
                 if full_path.exists():
                     try:
-                        if "EVOLVE-BLOCK-START" in full_path.read_text(encoding="utf-8"):
+                        text, line_count = _read_text_and_line_count(full_path)
+                        if "EVOLVE-BLOCK-START" in text:
                             valid_entries.append(entry)
+                            weighted_lengths[entry.file_path] = line_count
                     except OSError:
                         pass
             if valid_entries:
@@ -302,6 +317,7 @@ def run(config_path: Path, fresh: bool):
                     valid_entries,
                     total_iterations=config.evolution.max_iterations,
                     chunk_size=config.evolution.checkpoint_interval,
+                    file_lengths=weighted_lengths,
                 )
 
     try:
@@ -321,9 +337,10 @@ def run(config_path: Path, fresh: bool):
                 from codeevolve.scheduler import build_roundrobin_schedule
 
                 rr_schedule = build_roundrobin_schedule(
-                    [str(f.relative_to(project_path)) for f in marked_files],
+                    [f.relative_to(project_path).as_posix() for f in marked_files],
                     total_iterations=config.evolution.max_iterations,
                     chunk_size=config.evolution.checkpoint_interval,
+                    file_lengths=marked_file_lengths,
                 )
                 if rr_schedule:
                     click.echo(f"  Round-robin schedule: {len(rr_schedule)} slots across {len(marked_files)} files")

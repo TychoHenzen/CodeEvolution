@@ -5,6 +5,7 @@ import pytest
 from click.testing import CliRunner
 
 from codeevolve.cli import main
+from codeevolve.scheduler import ScheduleSlot
 
 
 @pytest.fixture
@@ -138,3 +139,113 @@ def test_run_fresh_no_checkpoints_dir(cli_runner, tmp_path):
     assert "Clearing existing checkpoints" in result.output
     # Exit should be non-zero only due to the mocked server failure, not due to missing dir
     assert "FileNotFoundError" not in result.output
+
+
+@patch("codeevolve.cli.run_evolution_with_rotation", return_value={})
+@patch("codeevolve.scheduler.build_schedule")
+@patch("codeevolve.cli.LlamaServer")
+def test_run_passes_line_counts_to_ledger_schedule(
+    mock_server_cls,
+    mock_build_schedule,
+    _mock_rotation,
+    cli_runner,
+    tmp_path,
+):
+    project = tmp_path
+    (project / "Cargo.toml").write_text('[package]\nname = "test"\nversion = "0.1.0"\n')
+    src = project / "src"
+    src.mkdir()
+    (src / "short.rs").write_text(
+        "// EVOLVE-BLOCK-START\nfn short() {}\n// EVOLVE-BLOCK-END\n",
+        encoding="utf-8",
+    )
+    (src / "long.rs").write_text(
+        "// EVOLVE-BLOCK-START\nfn long() {}\nfn more() {}\n// EVOLVE-BLOCK-END\n",
+        encoding="utf-8",
+    )
+
+    codeevolve_dir = project / ".codeevolve"
+    codeevolve_dir.mkdir()
+    config_path = codeevolve_dir / "evolution.yaml"
+    config_path.write_text(
+        "provider: local\n"
+        "llama_server:\n"
+        "  port: 8080\n"
+        "evolution:\n"
+        "  max_iterations: 100\n"
+        "  checkpoint_interval: 10\n"
+        "  tech_debt_ledger: TECH_DEBT_LEDGER.md\n",
+        encoding="utf-8",
+    )
+    (codeevolve_dir / "evaluator.py").write_text("def evaluate(path): return {}", encoding="utf-8")
+    (project / "TECH_DEBT_LEDGER.md").write_text(
+        "## Summary\n\n"
+        "| File Path | Type | Structural | Semantic | Combined | Top Issue | Last Reviewed | Trend |\n"
+        "|-----------|------|-----------|----------|----------|-----------|---------------|-------|\n"
+        "| src/long.rs | prod | 20.0 | 0 | 20.0 | complexity | 2026-04-02 | — |\n"
+        "| src/short.rs | prod | 10.0 | 0 | 10.0 | style | 2026-04-02 | — |\n",
+        encoding="utf-8",
+    )
+
+    mock_server_cls.return_value.start.return_value = None
+    mock_build_schedule.return_value = [ScheduleSlot("src/long.rs", 0, 10)]
+
+    result = cli_runner.invoke(main, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert mock_build_schedule.call_count == 1
+    assert mock_build_schedule.call_args.kwargs["file_lengths"] == {
+        "src/long.rs": 4,
+        "src/short.rs": 3,
+    }
+
+
+@patch("codeevolve.cli.run_evolution_with_rotation", return_value={})
+@patch("codeevolve.scheduler.build_roundrobin_schedule")
+@patch("codeevolve.cli.LlamaServer")
+def test_run_passes_line_counts_to_roundrobin_schedule(
+    mock_server_cls,
+    mock_build_roundrobin,
+    _mock_rotation,
+    cli_runner,
+    tmp_path,
+):
+    project = tmp_path
+    (project / "Cargo.toml").write_text('[package]\nname = "test"\nversion = "0.1.0"\n')
+    src = project / "src"
+    src.mkdir()
+    (src / "short.rs").write_text(
+        "// EVOLVE-BLOCK-START\nfn short() {}\n// EVOLVE-BLOCK-END\n",
+        encoding="utf-8",
+    )
+    (src / "long.rs").write_text(
+        "// EVOLVE-BLOCK-START\nfn long() {}\nfn more() {}\n// EVOLVE-BLOCK-END\n",
+        encoding="utf-8",
+    )
+
+    codeevolve_dir = project / ".codeevolve"
+    codeevolve_dir.mkdir()
+    config_path = codeevolve_dir / "evolution.yaml"
+    config_path.write_text(
+        "provider: local\n"
+        "llama_server:\n"
+        "  port: 8080\n"
+        "evolution:\n"
+        "  max_iterations: 100\n"
+        "  checkpoint_interval: 10\n"
+        "  tech_debt_ledger: ''\n",
+        encoding="utf-8",
+    )
+    (codeevolve_dir / "evaluator.py").write_text("def evaluate(path): return {}", encoding="utf-8")
+
+    mock_server_cls.return_value.start.return_value = None
+    mock_build_roundrobin.return_value = [ScheduleSlot("src/long.rs", 0, 10)]
+
+    result = cli_runner.invoke(main, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert mock_build_roundrobin.call_count == 1
+    assert mock_build_roundrobin.call_args.kwargs["file_lengths"] == {
+        "src/long.rs": 4,
+        "src/short.rs": 3,
+    }

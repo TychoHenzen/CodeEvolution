@@ -117,6 +117,24 @@ def test_proportional_allocation_non_divisible_total():
     assert result[-1].end_iter == 500
 
 
+def test_length_bias_prefers_longer_files():
+    """When scores tie, longer files should receive more iterations."""
+    entries = [
+        _entry("short.rs", 10.0),
+        _entry("long.rs", 10.0),
+    ]
+    lengths = {"short.rs": 10, "long.rs": 1000}
+    result = build_schedule(
+        entries,
+        total_iterations=100,
+        chunk_size=10,
+        file_lengths=lengths,
+    )
+    iters = {slot.file_path: slot.end_iter - slot.start_iter for slot in result}
+    assert iters["long.rs"] == 70
+    assert iters["short.rs"] == 30
+
+
 # ---------------------------------------------------------------------------
 # Contiguous, non-overlapping ranges
 # ---------------------------------------------------------------------------
@@ -318,6 +336,21 @@ def test_roundrobin_more_files_than_chunks_drops_extras():
     total_iters = sum(s.end_iter - s.start_iter for s in result)
     assert total_iters == 100
     assert len(result) <= 10
+
+
+def test_roundrobin_length_bias_prefers_longer_files():
+    """Round-robin fallback should also favor longer files when lengths are known."""
+    files = ["short.rs", "long.rs"]
+    lengths = {"short.rs": 10, "long.rs": 1000}
+    result = build_roundrobin_schedule(
+        files,
+        total_iterations=100,
+        chunk_size=10,
+        file_lengths=lengths,
+    )
+    iters = {slot.file_path: slot.end_iter - slot.start_iter for slot in result}
+    assert iters["long.rs"] == 70
+    assert iters["short.rs"] == 30
 
 
 def test_roundrobin_slots_are_contiguous():

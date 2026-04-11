@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from collections.abc import Mapping
 
 from codeevolve.ledger import LedgerEntry
 
@@ -22,10 +23,48 @@ class ScheduleSlot:
     end_iter: int  # exclusive
 
 
+_LENGTH_BIAS_SCALE = 5.0
+
+
+def _length_multiplier(line_count: int) -> float:
+    """Return a gentle multiplier that grows with file length.
+
+    The multiplier is intentionally shallow so size nudges the schedule rather
+    than overwhelming the existing debt-score and dependency weighting.
+    """
+    return 1.0 + (math.log1p(max(1, line_count)) / _LENGTH_BIAS_SCALE)
+
+
+def _apply_length_bias(
+    entries: list[LedgerEntry],
+    file_lengths: Mapping[str, int] | None,
+) -> list[LedgerEntry]:
+    """Return a copy of *entries* with line-count bias folded into scores."""
+    if not file_lengths:
+        return entries
+
+    weighted: list[LedgerEntry] = []
+    for entry in entries:
+        line_count = file_lengths.get(entry.file_path)
+        if line_count is None:
+            weighted.append(entry)
+            continue
+        weighted_score = entry.combined_score * _length_multiplier(line_count)
+        weighted.append(
+            LedgerEntry(
+                file_path=entry.file_path,
+                file_type=entry.file_type,
+                combined_score=weighted_score,
+            )
+        )
+    return weighted
+
+
 def build_schedule(
     entries: list[LedgerEntry],
     total_iterations: int,
     chunk_size: int = 10,
+    file_lengths: Mapping[str, int] | None = None,
 ) -> list[ScheduleSlot]:
     """Build a rotation schedule proportional to tech debt scores.
 
@@ -36,6 +75,8 @@ def build_schedule(
         total_iterations: Total iteration budget.
         chunk_size: Granularity of allocation; every file gets a whole number of
                     chunks.  Must be >= 1.
+        file_lengths: Optional mapping of file_path -> line count. When present,
+            longer files get a gentle score boost before chunk allocation.
 
     Returns:
         List of :class:`ScheduleSlot` with non-overlapping, contiguous ranges.
@@ -44,6 +85,8 @@ def build_schedule(
     """
     if not entries:
         return []
+
+    entries = _apply_length_bias(entries, file_lengths)
 
     # Ensure highest-scoring files come first regardless of caller order.
     entries = sorted(entries, key=lambda e: e.combined_score, reverse=True)
@@ -131,18 +174,23 @@ def build_roundrobin_schedule(
     file_paths: list[str],
     total_iterations: int,
     chunk_size: int = 10,
+    file_lengths: Mapping[str, int] | None = None,
 ) -> list[ScheduleSlot]:
     """Build an equal-weight round-robin schedule for files without debt scores.
 
     Each file receives an equal share of the iteration budget, rounded down to
     the nearest chunk boundary.  Any leftover chunks (from floor rounding) are
-    distributed one-at-a-time to the first files in the list.
+    distributed one-at-a-time to the first files in the list.  When
+    *file_lengths* is provided, longer files get a gentle bonus so the schedule
+    spends more time on larger source files.
 
     Args:
         file_paths: Ordered list of relative file paths to schedule.
         total_iterations: Total iteration budget.
         chunk_size: Granularity of allocation; every file gets a whole number of
                     chunks.  Must be >= 1.
+        file_lengths: Optional mapping of file_path -> line count. When present,
+            longer files get a gentle score boost before chunk allocation.
 
     Returns:
         List of :class:`ScheduleSlot` with non-overlapping, contiguous ranges,
@@ -159,4 +207,9 @@ def build_roundrobin_schedule(
         LedgerEntry(file_path=fp, file_type="prod", combined_score=1.0)
         for fp in file_paths
     ]
-    return build_schedule(fake_entries, total_iterations=total_iterations, chunk_size=chunk_size)
+    return build_schedule(
+        fake_entries,
+        total_iterations=total_iterations,
+        chunk_size=chunk_size,
+        file_lengths=file_lengths,
+    )
