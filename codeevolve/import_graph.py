@@ -16,22 +16,8 @@ _USE_SUPER_RE = re.compile(r"^\s*use\s+super::(\w+)")
 _MOD_DECL_RE = re.compile(r"^\s*mod\s+(\w+)\s*;")
 
 
-def _resolve_use_crate(project_path: Path, module_name: str) -> str | None:
-    """Resolve `use crate::module_name` to a relative file path."""
-    src_dir = project_path / "src"
-    # Check src/module_name.rs
-    candidate = src_dir / f"{module_name}.rs"
-    if candidate.exists():
-        return candidate.relative_to(project_path).as_posix()
-    # Check src/module_name/mod.rs
-    candidate = src_dir / module_name / "mod.rs"
-    if candidate.exists():
-        return candidate.relative_to(project_path).as_posix()
-    return None
-
-
-def _resolve_use_crate_in_crate(crate_root: Path, project_path: Path, module_name: str) -> str | None:
-    """Resolve `use crate::module_name` within a specific crate root."""
+def _resolve_use_crate(crate_root: Path, project_path: Path, module_name: str) -> str | None:
+    """Resolve `use crate::module_name` within a crate root to a relative file path."""
     src_dir = crate_root / "src"
     candidate = src_dir / f"{module_name}.rs"
     if candidate.exists():
@@ -88,7 +74,7 @@ def _find_crate_root_for_file(file_path: Path, project_path: Path, crate_graph: 
             return crate_graph.crate_roots[crate_name]
     # Fallback: walk up looking for Cargo.toml
     current = file_path.parent
-    while current != project_path.parent:
+    while current != project_path.parent and current != current.parent:
         if (current / "Cargo.toml").exists():
             return current
         current = current.parent
@@ -146,11 +132,9 @@ def build_reverse_deps(
             if m:
                 module_name = m.group(1)
                 if crate_root is not None:
-                    target = _resolve_use_crate_in_crate(crate_root, project_path, module_name)
-                else:
-                    target = _resolve_use_crate(project_path, module_name)
-                if target is not None:
-                    deps_of_this_file.add(target)
+                    target = _resolve_use_crate(crate_root, project_path, module_name)
+                    if target is not None:
+                        deps_of_this_file.add(target)
                 continue
 
             # use super::item

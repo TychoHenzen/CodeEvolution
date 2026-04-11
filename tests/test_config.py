@@ -1,8 +1,9 @@
+import logging
 from pathlib import Path
 
 import pytest
 
-from codeevolve.config import CodeEvolveConfig, CodexConfig, load_config
+from codeevolve.config import CodeEvolveConfig, CodexConfig, EvolutionConfig, load_config
 
 
 def test_load_default_config():
@@ -279,3 +280,112 @@ evolution:
     assert config.evolution.tech_debt_ledger == ""
     assert config.evolution.top_n_files == 20
     assert config.evolution.prod_only is True
+
+
+# ---------------------------------------------------------------------------
+# Meta-prompting and exploration/exploitation/temperature fields
+# ---------------------------------------------------------------------------
+
+
+def test_new_evolution_fields_defaults():
+    """New EvolutionConfig fields have correct default values."""
+    config = load_config()
+    assert config.evolution.changes_description is False
+    assert config.evolution.exploration_ratio == 0.2
+    assert config.evolution.exploitation_ratio == 0.7
+    assert config.evolution.temperature == 0.7
+
+
+def test_exploration_exploitation_in_openevolve_dict():
+    """exploration_ratio and exploitation_ratio appear in the 'database' section."""
+    config = load_config()
+    oe_dict = config.to_openevolve_dict()
+    assert oe_dict["database"]["exploration_ratio"] == 0.2
+    assert oe_dict["database"]["exploitation_ratio"] == 0.7
+
+
+def test_temperature_custom_value_in_openevolve_dict():
+    """Custom temperature flows through to OpenEvolve dict."""
+    config = load_config()
+    config.evolution.temperature = 0.9
+    oe_dict = config.to_openevolve_dict()
+    assert oe_dict["llm"]["temperature"] == 0.9
+
+
+def test_temperature_default_in_openevolve_dict():
+    """Default temperature of 0.7 is forwarded to OpenEvolve dict."""
+    config = load_config()
+    oe_dict = config.to_openevolve_dict()
+    assert oe_dict["llm"]["temperature"] == 0.7
+
+
+def test_changes_description_false_no_prompt_keys():
+    """When changes_description=False, meta-prompting keys are absent."""
+    config = load_config()
+    config.evolution.changes_description = False
+    oe_dict = config.to_openevolve_dict()
+    assert "programs_as_changes_description" not in oe_dict["prompt"]
+    assert "initial_changes_description" not in oe_dict["prompt"]
+
+
+def test_changes_description_true_adds_prompt_keys():
+    """When changes_description=True, meta-prompting keys are present and diff is forced."""
+    config = load_config()
+    config.evolution.changes_description = True
+    config.evolution.diff_based_evolution = True
+    oe_dict = config.to_openevolve_dict()
+    assert oe_dict["prompt"]["programs_as_changes_description"] is True
+    assert "initial_changes_description" in oe_dict["prompt"]
+    assert oe_dict["diff_based_evolution"] is True
+
+
+def test_changes_description_forces_diff_mode(caplog):
+    """changes_description=True forces diff_based_evolution=True even when config has it False."""
+    config = load_config()
+    config.evolution.changes_description = True
+    config.evolution.diff_based_evolution = False
+
+    with caplog.at_level(logging.WARNING, logger="codeevolve.config"):
+        oe_dict = config.to_openevolve_dict()
+
+    assert oe_dict["diff_based_evolution"] is True
+    assert oe_dict["prompt"]["programs_as_changes_description"] is True
+    assert any("forcing diff_based_evolution" in msg for msg in caplog.messages)
+
+
+def test_new_evolution_fields_override_via_yaml(tmp_path: Path):
+    """New evolution fields can be overridden via YAML."""
+    yaml_content = """
+evolution:
+  changes_description: true
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.6
+  temperature: 0.5
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    assert config.evolution.changes_description is True
+    assert config.evolution.exploration_ratio == 0.3
+    assert config.evolution.exploitation_ratio == 0.6
+    assert config.evolution.temperature == 0.5
+
+
+def test_new_fields_in_openevolve_dict_after_yaml_override(tmp_path: Path):
+    """YAML-overridden fields flow through to the OE dict."""
+    yaml_content = """
+evolution:
+  changes_description: true
+  exploration_ratio: 0.15
+  exploitation_ratio: 0.80
+  temperature: 0.4
+"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_content)
+    config = load_config(config_path)
+    oe_dict = config.to_openevolve_dict()
+    assert oe_dict["database"]["exploration_ratio"] == 0.15
+    assert oe_dict["database"]["exploitation_ratio"] == 0.80
+    assert oe_dict["llm"]["temperature"] == 0.4
+    assert oe_dict["prompt"]["programs_as_changes_description"] is True
+    assert "initial_changes_description" in oe_dict["prompt"]

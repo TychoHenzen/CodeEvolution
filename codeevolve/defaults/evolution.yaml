@@ -44,6 +44,10 @@ evolution:
   tech_debt_ledger: ""
   top_n_files: 20
   prod_only: true
+  changes_description: false  # enable meta-prompting (co-evolves code descriptions, requires diff mode)
+  exploration_ratio: 0.2      # probability of random parent selection (exploration)
+  exploitation_ratio: 0.7     # probability of elite parent selection (exploitation)
+  temperature: 0.7            # LLM sampling temperature
 
 rust:
   cargo_path: "cargo"

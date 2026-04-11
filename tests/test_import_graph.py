@@ -262,11 +262,10 @@ class TestEdgeCases:
         assert result == {}
 
     def test_missing_file_skipped(self, tmp_path: Path):
-        """A file path that doesn't exist on disk should be handled gracefully."""
+        """A file path that doesn't exist on disk should produce zero reverse deps."""
         missing = tmp_path / "src" / "gone.rs"
         result = build_reverse_deps(tmp_path, [missing])
-        # The file can't be read, so it just gets 0 or is skipped
-        assert isinstance(result, dict)
+        assert result.get("src/gone.rs", 0) == 0
 
     def test_empty_file_content(self, tmp_path: Path):
         """An empty .rs file should produce zero reverse deps."""

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+_logger = logging.getLogger(__name__)
 
 _DEFAULTS_DIR = Path(__file__).parent / "defaults"
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -43,6 +46,10 @@ class EvolutionConfig:
     tech_debt_ledger: str = ""  # path to TECH_DEBT_LEDGER.md relative to project root (empty = disabled)
     top_n_files: int = 20  # how many worst prod files to evolve
     prod_only: bool = True  # filter ledger to prod files only
+    changes_description: bool = False  # enable OpenEvolve's programs_as_changes_description mode
+    exploration_ratio: float = 0.2   # probability of random parent selection
+    exploitation_ratio: float = 0.7  # probability of elite parent selection
+    temperature: float = 0.7         # LLM sampling temperature
 
 
 @dataclass
@@ -155,6 +162,12 @@ class CodeEvolveConfig:
             LLM knows what exists but cannot modify it.
         """
         diff_mode = self.evolution.diff_based_evolution
+        if self.evolution.changes_description and not diff_mode:
+            _logger.warning(
+                "changes_description=True requires diff_based_evolution=True; "
+                "forcing diff_based_evolution to True in the OpenEvolve config."
+            )
+            diff_mode = True
 
         frozen_block = ""
         if frozen_context:
@@ -224,7 +237,7 @@ class CodeEvolveConfig:
                 ] if self.provider == "mixed" else [
                     {"name": self.model_name, "weight": 1.0},
                 ],
-                "temperature": 0.7,
+                "temperature": self.evolution.temperature,
                 "max_tokens": 16384,
                 "timeout": 300,
             },
@@ -234,6 +247,16 @@ class CodeEvolveConfig:
                 "num_top_programs": 3,
                 "num_diverse_programs": 2,
                 "use_template_stochasticity": True,
+                **(
+                    {
+                        "programs_as_changes_description": True,
+                        "initial_changes_description": (
+                            "Initial implementation of the evolvable Rust code section."
+                        ),
+                    }
+                    if self.evolution.changes_description
+                    else {}
+                ),
             },
             "database": {
                 "population_size": self.evolution.population_size,
@@ -241,6 +264,8 @@ class CodeEvolveConfig:
                 "migration_interval": self.evolution.migration_interval,
                 "feature_dimensions": ["complexity", "diversity"],
                 "log_prompts": True,
+                "exploration_ratio": self.evolution.exploration_ratio,
+                "exploitation_ratio": self.evolution.exploitation_ratio,
             },
             "evaluator": {
                 "timeout": 6000,
