@@ -45,6 +45,9 @@ def build_schedule(
     if not entries:
         return []
 
+    # Ensure highest-scoring files come first regardless of caller order.
+    entries = sorted(entries, key=lambda e: e.combined_score, reverse=True)
+
     # How many chunks fit in the total budget?
     total_chunks = total_iterations // chunk_size
     if total_chunks == 0:
@@ -122,3 +125,38 @@ def build_schedule(
         cursor += iters
 
     return slots
+
+
+def build_roundrobin_schedule(
+    file_paths: list[str],
+    total_iterations: int,
+    chunk_size: int = 10,
+) -> list[ScheduleSlot]:
+    """Build an equal-weight round-robin schedule for files without debt scores.
+
+    Each file receives an equal share of the iteration budget, rounded down to
+    the nearest chunk boundary.  Any leftover chunks (from floor rounding) are
+    distributed one-at-a-time to the first files in the list.
+
+    Args:
+        file_paths: Ordered list of relative file paths to schedule.
+        total_iterations: Total iteration budget.
+        chunk_size: Granularity of allocation; every file gets a whole number of
+                    chunks.  Must be >= 1.
+
+    Returns:
+        List of :class:`ScheduleSlot` with non-overlapping, contiguous ranges,
+        one slot per file (files that end up with 0 chunks are omitted).
+        Empty when the budget is too small to fit even a single chunk or when
+        *file_paths* is empty.
+    """
+    if not file_paths:
+        return []
+
+    # Reuse build_schedule() with equal scores — avoids duplicating allocation
+    # logic.  Score value doesn't matter as long as they're all identical.
+    fake_entries = [
+        LedgerEntry(file_path=fp, file_type="prod", combined_score=1.0)
+        for fp in file_paths
+    ]
+    return build_schedule(fake_entries, total_iterations=total_iterations, chunk_size=chunk_size)

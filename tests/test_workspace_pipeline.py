@@ -122,15 +122,16 @@ def test_is_bundle_partial_markers():
 # ---------------------------------------------------------------------------
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_evaluates_bundle_candidate(mock_build, mock_fix, tmp_path):
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_evaluates_bundle_candidate(mock_clean, mock_clippy, mock_fix, tmp_path):
     """Pipeline extracts focus content from a bundle and evaluates it."""
     config = load_config()
     source_file = tmp_path / "lib.rs"
     source_file.write_text("fn main() { original(); }", encoding="utf-8")
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
-    mock_build.return_value = MagicMock(
+    mock_clippy.return_value = MagicMock(
         success=False, error_output="err", elapsed_seconds=0.5,
     )
 
@@ -158,8 +159,9 @@ def test_pipeline_evaluates_bundle_candidate(mock_build, mock_fix, tmp_path):
 
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_bundle_with_evolve_block(mock_build, mock_fix, tmp_path):
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_bundle_with_evolve_block(mock_clean, mock_clippy, mock_fix, tmp_path):
     """Bundle focus content with EVOLVE-BLOCK markers is handled correctly."""
     config = load_config()
     source_file = tmp_path / "lib.rs"
@@ -173,7 +175,7 @@ def test_pipeline_bundle_with_evolve_block(mock_build, mock_fix, tmp_path):
     )
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
-    mock_build.return_value = MagicMock(
+    mock_clippy.return_value = MagicMock(
         success=False, error_output="err", elapsed_seconds=0.5,
     )
 
@@ -302,53 +304,34 @@ def test_collect_test_sources_workspace_member(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Release binary size measurement
+# Release binary size measurement (find_release_binary_size)
 # ---------------------------------------------------------------------------
 
-from codeevolve.evaluator.benchmark import measure_release_binary_size
+from codeevolve.evaluator.benchmark import find_release_binary_size
 
 
-def test_measure_release_binary_size_success(tmp_path):
-    """Successful release build returns the binary file size."""
-    # Create a fake release binary
+def test_find_release_binary_size_success(tmp_path):
+    """Returns the binary file size when the binary exists."""
     release_dir = tmp_path / "target" / "release"
     release_dir.mkdir(parents=True)
 
-    # Determine the expected binary name based on platform
     is_windows = platform.system() == "Windows"
     binary_name = "my_app.exe" if is_windows else "my_app"
     binary_path = release_dir / binary_name
     binary_path.write_bytes(b"x" * 5000)
 
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-        size = measure_release_binary_size(tmp_path, "my_app")
-
+    size = find_release_binary_size(tmp_path, "my_app")
     assert size == 5000
 
 
-def test_measure_release_binary_size_build_failure(tmp_path):
-    """Failed release build returns 0."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=1, stderr="error: ...")
-        size = measure_release_binary_size(tmp_path, "my_app")
-
-    assert size == 0
-
-
-def test_measure_release_binary_size_binary_not_found(tmp_path):
-    """Returns 0 when the binary doesn't exist after build."""
-    # Create target/release but no binary
+def test_find_release_binary_size_not_found(tmp_path):
+    """Returns 0 when the binary doesn't exist."""
     (tmp_path / "target" / "release").mkdir(parents=True)
-
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-        size = measure_release_binary_size(tmp_path, "my_app")
-
+    size = find_release_binary_size(tmp_path, "my_app")
     assert size == 0
 
 
-def test_measure_release_binary_size_with_upx(tmp_path):
+def test_find_release_binary_size_with_upx(tmp_path):
     """UPX compression is applied when upx_path is provided."""
     release_dir = tmp_path / "target" / "release"
     release_dir.mkdir(parents=True)
@@ -365,21 +348,21 @@ def test_measure_release_binary_size_with_upx(tmp_path):
         return MagicMock(returncode=0, stderr="")
 
     with patch("subprocess.run", side_effect=mock_run_side_effect):
-        size = measure_release_binary_size(
+        size = find_release_binary_size(
             tmp_path, "my_app",
             upx_path="/usr/bin/upx",
             upx_args=["--best"],
         )
 
     assert size == 5000
-    # Verify UPX was called (second subprocess.run call)
-    assert len(calls) == 2
-    upx_call = calls[1]
+    # Verify UPX was called
+    assert len(calls) == 1
+    upx_call = calls[0]
     assert upx_call[0] == "/usr/bin/upx"
     assert "--best" in upx_call
 
 
-def test_measure_release_binary_size_custom_target_dir(tmp_path):
+def test_find_release_binary_size_custom_target_dir(tmp_path):
     """Custom target_dir is used for finding binaries."""
     custom_target = tmp_path / "custom_target"
     release_dir = custom_target / "release"
@@ -389,26 +372,10 @@ def test_measure_release_binary_size_custom_target_dir(tmp_path):
     binary_name = "my_app.exe" if is_windows else "my_app"
     (release_dir / binary_name).write_bytes(b"x" * 3000)
 
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-        size = measure_release_binary_size(
-            tmp_path, "my_app", target_dir=str(custom_target),
-        )
-
+    size = find_release_binary_size(
+        tmp_path, "my_app", target_dir=str(custom_target),
+    )
     assert size == 3000
-    # Verify --target-dir was passed to cargo
-    cargo_cmd = mock_run.call_args_list[0][0][0]
-    assert "--target-dir" in cargo_cmd
-    assert str(custom_target) in cargo_cmd
-
-
-def test_measure_release_binary_size_timeout(tmp_path):
-    """Build timeout returns 0."""
-    import subprocess as sp
-    with patch("subprocess.run", side_effect=sp.TimeoutExpired("cargo", 300)):
-        size = measure_release_binary_size(tmp_path, "my_app")
-
-    assert size == 0
 
 
 # ---------------------------------------------------------------------------
@@ -416,31 +383,31 @@ def test_measure_release_binary_size_timeout(tmp_path):
 # ---------------------------------------------------------------------------
 
 @patch("codeevolve.evaluator.pipeline.judge_code")
-@patch("codeevolve.evaluator.pipeline.measure_release_binary_size")
-@patch("codeevolve.evaluator.pipeline.measure_compile_time")
-@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
-@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.find_release_binary_size")
 @patch("codeevolve.evaluator.pipeline.run_cargo_build")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
 def test_pipeline_uses_release_binary_when_package_set(
-    mock_build, mock_test, mock_clippy, mock_compile_time,
+    mock_clean, mock_clippy, mock_test, mock_build,
     mock_release_size, mock_judge, tmp_path,
 ):
-    """When binary_package is set in config, measure_release_binary_size is used."""
+    """When binary_package is set in config, a release link + find_release_binary_size is used."""
     config = load_config()
     config.benchmarks.binary_package = "my_app"
+    config.benchmarks.custom_command = None
 
     source_file = tmp_path / "lib.rs"
     source_file.write_text("fn main() {}")
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
-    mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
+    mock_clippy.return_value = MagicMock(
+        success=True, warnings=[], warning_counts={}, elapsed_seconds=2.5,
+    )
     mock_test.return_value = MagicMock(
         success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0,
     )
-    mock_clippy.return_value = MagicMock(
-        success=True, warnings=[], warning_counts={}, elapsed_seconds=0.5,
-    )
-    mock_compile_time.return_value = 2.5
+    mock_build.return_value = MagicMock(success=True, elapsed_seconds=0.5)
     mock_release_size.return_value = 500_000
     mock_judge.return_value = MagicMock(combined_score=0.7)
 
@@ -450,39 +417,35 @@ def test_pipeline_uses_release_binary_when_package_set(
     result = pipeline.evaluate(str(candidate))
     assert result.passed_gates is True
 
-    # Verify measure_release_binary_size was called
+    # Verify release build (link step) and binary size measurement
+    mock_build.assert_called_once()
+    assert mock_build.call_args[1].get("release") or mock_build.call_args[0][3] is True
     mock_release_size.assert_called_once()
-    call_kwargs = mock_release_size.call_args
-    assert call_kwargs[0][1] == "my_app"  # binary_package arg
+    assert mock_release_size.call_args[0][1] == "my_app"
 
 
 @patch("codeevolve.evaluator.pipeline.judge_code")
-@patch("codeevolve.evaluator.pipeline.measure_binary_size")
-@patch("codeevolve.evaluator.pipeline.measure_compile_time")
-@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_uses_debug_binary_when_no_package(
-    mock_build, mock_test, mock_clippy, mock_compile_time,
-    mock_debug_size, mock_judge, tmp_path,
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_skips_binary_when_no_package(
+    mock_clean, mock_clippy, mock_test, mock_judge, tmp_path,
 ):
-    """When binary_package is not set, the old measure_binary_size is used."""
+    """When binary_package is not set, binary size measurement is skipped."""
     config = load_config()
     config.benchmarks.binary_package = None
+    config.benchmarks.custom_command = None
 
     source_file = tmp_path / "lib.rs"
     source_file.write_text("fn main() {}")
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
-    mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
+    mock_clippy.return_value = MagicMock(
+        success=True, warnings=[], warning_counts={}, elapsed_seconds=2.5,
+    )
     mock_test.return_value = MagicMock(
         success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0,
     )
-    mock_clippy.return_value = MagicMock(
-        success=True, warnings=[], warning_counts={}, elapsed_seconds=0.5,
-    )
-    mock_compile_time.return_value = 2.5
-    mock_debug_size.return_value = 1_000_000
     mock_judge.return_value = MagicMock(combined_score=0.7)
 
     candidate = tmp_path / "candidate.rs"
@@ -491,24 +454,18 @@ def test_pipeline_uses_debug_binary_when_no_package(
     result = pipeline.evaluate(str(candidate))
     assert result.passed_gates is True
 
-    # Verify the old measure_binary_size was called
-    mock_debug_size.assert_called_once()
-
 
 # ---------------------------------------------------------------------------
 # Verify custom_command flows through (Task 5.4)
 # ---------------------------------------------------------------------------
 
 @patch("codeevolve.evaluator.pipeline.judge_code")
-@patch("codeevolve.evaluator.pipeline.measure_binary_size")
-@patch("codeevolve.evaluator.pipeline.measure_compile_time")
 @patch("codeevolve.evaluator.pipeline.run_user_benchmark")
-@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
 def test_pipeline_custom_command_flows_through(
-    mock_build, mock_test, mock_clippy, mock_bench, mock_compile_time,
-    mock_debug_size, mock_judge, tmp_path,
+    mock_clean, mock_clippy, mock_test, mock_bench, mock_judge, tmp_path,
 ):
     """cfg.benchmarks.custom_command is passed to run_user_benchmark."""
     config = load_config()
@@ -520,16 +477,13 @@ def test_pipeline_custom_command_flows_through(
     source_file.write_text("fn main() {}")
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
-    mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
+    mock_clippy.return_value = MagicMock(
+        success=True, warnings=[], warning_counts={}, elapsed_seconds=2.5,
+    )
     mock_test.return_value = MagicMock(
         success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0,
     )
-    mock_clippy.return_value = MagicMock(
-        success=True, warnings=[], warning_counts={}, elapsed_seconds=0.5,
-    )
     mock_bench.return_value = MagicMock(success=True, score=42.0, output="time: 42 ms")
-    mock_compile_time.return_value = 2.5
-    mock_debug_size.return_value = 1_000_000
     mock_judge.return_value = MagicMock(combined_score=0.7)
 
     candidate = tmp_path / "candidate.rs"

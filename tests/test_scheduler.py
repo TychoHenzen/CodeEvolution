@@ -1,11 +1,11 @@
-"""Tests for codeevolve.scheduler — build_schedule() and ScheduleSlot."""
+"""Tests for codeevolve.scheduler — build_schedule(), build_roundrobin_schedule(), and ScheduleSlot."""
 
 from __future__ import annotations
 
 import pytest
 
 from codeevolve.ledger import LedgerEntry
-from codeevolve.scheduler import ScheduleSlot, build_schedule
+from codeevolve.scheduler import ScheduleSlot, build_schedule, build_roundrobin_schedule
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +270,73 @@ def test_schedule_slot_equality():
     a = ScheduleSlot("a.rs", 0, 100)
     b = ScheduleSlot("a.rs", 0, 100)
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# build_roundrobin_schedule
+# ---------------------------------------------------------------------------
+
+
+def test_roundrobin_three_files_equal_allocation():
+    """3 files, 300 iterations, chunk_size=10 → each gets 100 iterations."""
+    files = ["a.rs", "b.rs", "c.rs"]
+    result = build_roundrobin_schedule(files, total_iterations=300, chunk_size=10)
+    assert len(result) == 3
+    iters = [s.end_iter - s.start_iter for s in result]
+    assert iters == [100, 100, 100]
+
+
+def test_roundrobin_equal_distribution():
+    """Each file gets the same number of iterations (within chunk rounding)."""
+    files = ["a.rs", "b.rs", "c.rs", "d.rs"]
+    result = build_roundrobin_schedule(files, total_iterations=400, chunk_size=10)
+    iters = [s.end_iter - s.start_iter for s in result]
+    # All files should get the same share when iterations divide evenly
+    assert iters[0] == iters[1] == iters[2] == iters[3]
+
+
+def test_roundrobin_empty_file_list_returns_empty():
+    """Empty file list → empty schedule."""
+    result = build_roundrobin_schedule([], total_iterations=300, chunk_size=10)
+    assert result == []
+
+
+def test_roundrobin_single_file_gets_all_iterations():
+    """Single file → gets all iterations (rounded to chunk boundary)."""
+    result = build_roundrobin_schedule(["only.rs"], total_iterations=300, chunk_size=10)
+    assert len(result) == 1
+    assert result[0].file_path == "only.rs"
+    assert result[0].start_iter == 0
+    assert result[0].end_iter == 300
+
+
+def test_roundrobin_more_files_than_chunks_drops_extras():
+    """More files than chunks → lowest files are dropped, total iters used."""
+    # 20 files but only 10 chunks (100 iters / chunk_size=10)
+    files = [f"f{i:02d}.rs" for i in range(20)]
+    result = build_roundrobin_schedule(files, total_iterations=100, chunk_size=10)
+    total_iters = sum(s.end_iter - s.start_iter for s in result)
+    assert total_iters == 100
+    assert len(result) <= 10
+
+
+def test_roundrobin_slots_are_contiguous():
+    """Slots must be contiguous (no gaps, no overlaps)."""
+    files = ["a.rs", "b.rs", "c.rs"]
+    result = build_roundrobin_schedule(files, total_iterations=300, chunk_size=10)
+    assert result[0].start_iter == 0
+    for i in range(1, len(result)):
+        assert result[i].start_iter == result[i - 1].end_iter
+
+
+def test_roundrobin_preserves_file_order():
+    """Files appear in the schedule in the order they were passed."""
+    files = ["z.rs", "a.rs", "m.rs"]
+    result = build_roundrobin_schedule(files, total_iterations=300, chunk_size=10)
+    assert [s.file_path for s in result] == files
+
+
+def test_roundrobin_budget_too_small_returns_empty():
+    """Budget smaller than chunk_size → empty schedule."""
+    result = build_roundrobin_schedule(["a.rs", "b.rs"], total_iterations=5, chunk_size=10)
+    assert result == []

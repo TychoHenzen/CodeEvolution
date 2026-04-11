@@ -19,26 +19,45 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def _find_claude(configured_path: str) -> str:
-    """Resolve the claude CLI binary path."""
+def _find_claude(configured_path: str) -> list[str]:
+    """Resolve the claude CLI binary as a command list.
+
+    On Windows, if the binary isn't found natively, invoke it through
+    WSL since the Claude Code CLI is typically installed there.
+    """
     if "/" in configured_path or "\\" in configured_path:
-        return configured_path
+        return [configured_path]
     found = shutil.which(configured_path)
     if found:
-        return found
+        return [found]
     if sys.platform == "win32":
         for ext in (".exe", ".cmd"):
             found = shutil.which(configured_path + ext)
             if found:
-                return found
-    return configured_path
+                return [found]
+        # Claude CLI lives inside WSL — resolve its full path and
+        # invoke through wsl.exe (non-login shell lacks ~/.local/bin).
+        wsl = shutil.which("wsl")
+        if wsl:
+            try:
+                result = subprocess.run(
+                    [wsl, "bash", "-lc", f"which {configured_path}"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                linux_path = result.stdout.strip()
+                if linux_path and result.returncode == 0:
+                    return [wsl, linux_path]
+            except Exception:
+                pass
+            return [wsl, configured_path]
+    return [configured_path]
 
 
 class _ProxyHandler(BaseHTTPRequestHandler):
     """Translates a single OpenAI-compatible request into a ``claude -p`` call."""
 
     # Configured by ClaudeProxy before the server starts accepting.
-    claude_path: str = "claude"
+    claude_cmd: list[str] = ["claude"]
     model: str = "haiku"
     effort: str = "low"
     timeout: int = 300
@@ -67,7 +86,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # command-line limit.  Claude CLI treats piped stdin as
             # user-provided context for the -p prompt.
             result = subprocess.run(
-                [self.claude_path,
+                [*self.claude_cmd,
                  "--model", self.model,
                  "--no-session-persistence",
                  "--effort", self.effort,
@@ -191,7 +210,7 @@ class ClaudeProxy:
         return self._config.model
 
     def start(self) -> None:
-        _ProxyHandler.claude_path = self._claude_path
+        _ProxyHandler.claude_cmd = self._claude_path
         _ProxyHandler.model = self._config.model
         _ProxyHandler.effort = self._config.effort
         _ProxyHandler.timeout = self._config.timeout
@@ -206,7 +225,7 @@ class ClaudeProxy:
         logger.info(
             "Claude proxy started on port %d (model=%s, effort=%s, claude=%s)",
             self._config.proxy_port, self._config.model,
-            self._config.effort, self._claude_path,
+            self._config.effort, " ".join(self._claude_path),
         )
 
     def stop(self) -> None:

@@ -43,9 +43,10 @@ def test_evaluation_result_fields():
 
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_build_failure_returns_zero(mock_build, mock_fix, pipeline, candidate_file):
-    mock_build.return_value = MagicMock(success=False, error_output="error", elapsed_seconds=1.0)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_build_failure_returns_zero(mock_clean, mock_clippy, mock_fix, pipeline, candidate_file):
+    mock_clippy.return_value = MagicMock(success=False, error_output="error", elapsed_seconds=1.0)
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is False
     assert result.combined_score == 0.0
@@ -53,9 +54,10 @@ def test_pipeline_build_failure_returns_zero(mock_build, mock_fix, pipeline, can
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_test_failure_returns_zero(mock_build, mock_test, mock_fix, pipeline, candidate_file):
-    mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_test_failure_returns_zero(mock_clean, mock_clippy, mock_test, mock_fix, pipeline, candidate_file):
+    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
     mock_test.return_value = MagicMock(success=False, error_output="test failed", tests_passed=0, tests_failed=1, failed_test_names=["tests::test_something"], elapsed_seconds=1.0)
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is False
@@ -63,18 +65,17 @@ def test_pipeline_test_failure_returns_zero(mock_build, mock_test, mock_fix, pip
 
 
 @patch("codeevolve.evaluator.pipeline.judge_code")
-@patch("codeevolve.evaluator.pipeline.measure_binary_size")
-@patch("codeevolve.evaluator.pipeline.measure_compile_time")
-@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_full_pass(mock_build, mock_test, mock_clippy, mock_compile_time, mock_binary_size, mock_judge, pipeline, candidate_file):
-    mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_full_pass(mock_clean, mock_clippy, mock_test, mock_judge, pipeline, candidate_file):
+    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=2.5)
     mock_test.return_value = MagicMock(success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0)
-    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=0.5)
-    mock_compile_time.return_value = 2.5
-    mock_binary_size.return_value = 1_000_000
     mock_judge.return_value = MagicMock(combined_score=0.7)
+
+    # Disable binary size (no binary_package set by default)
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
 
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is True
@@ -83,20 +84,22 @@ def test_pipeline_full_pass(mock_build, mock_test, mock_clippy, mock_compile_tim
     assert result.perf_score == 1.0  # baseline ratio
 
 
-@patch("codeevolve.evaluator.pipeline.measure_binary_size")
-@patch("codeevolve.evaluator.pipeline.measure_compile_time")
-@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_skips_llm_if_not_top_quartile(mock_build, mock_test, mock_clippy, mock_compile_time, mock_binary_size, pipeline, candidate_file):
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_skips_llm_if_not_top_quartile(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
     # Enable top_quartile_only for this test
     pipeline.config.llm_judgment.top_quartile_only = True
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
 
-    mock_build.return_value = MagicMock(success=True, elapsed_seconds=1.0)
+    mock_clippy.return_value = MagicMock(
+        success=True,
+        warnings=[{"code": "clippy::style"}] * 20,
+        warning_counts={"style": 20},
+        elapsed_seconds=2.5,
+    )
     mock_test.return_value = MagicMock(success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0)
-    mock_clippy.return_value = MagicMock(success=True, warnings=[{"code": "clippy::style"}] * 20, warning_counts={"style": 20}, elapsed_seconds=0.5)
-    mock_compile_time.return_value = 10.0
-    mock_binary_size.return_value = 5_000_000
 
     # Fill history with high scores so this one won't be top quartile
     pipeline._score_history = [0.9, 0.95, 0.85, 0.88, 0.92, 0.87, 0.91, 0.86]
@@ -121,10 +124,11 @@ def test_pipeline_rejects_candidate_identical_to_original(pipeline, tmp_path):
 
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_rejects_repeated_candidate(mock_build, mock_fix, pipeline, tmp_path):
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_rejects_repeated_candidate(mock_clean, mock_clippy, mock_fix, pipeline, tmp_path):
     """A candidate that was already seen in a prior iteration is rejected."""
-    mock_build.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
+    mock_clippy.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
 
     # First evaluation of novel candidate (will fail build, but still recorded)
     f1 = tmp_path / "v1.rs"
@@ -140,10 +144,11 @@ def test_pipeline_rejects_repeated_candidate(mock_build, mock_fix, pipeline, tmp
 
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_accepts_novel_candidates(mock_build, mock_fix, pipeline, tmp_path):
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_accepts_novel_candidates(mock_clean, mock_clippy, mock_fix, pipeline, tmp_path):
     """Distinct candidates are accepted (not rejected by dedup)."""
-    mock_build.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
+    mock_clippy.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
 
     for i in range(5):
         f = tmp_path / f"v{i}.rs"
@@ -219,8 +224,9 @@ def test_splice_replaces_content():
 
 
 @patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
-@patch("codeevolve.evaluator.pipeline.run_cargo_build")
-def test_pipeline_enforces_evolve_block(mock_build, mock_fix, tmp_path):
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_pipeline_enforces_evolve_block(mock_clean, mock_clippy, mock_fix, tmp_path):
     """LLM output that removes markers still gets spliced correctly."""
     config = load_config()
     source_file = tmp_path / "lib.rs"
@@ -229,7 +235,7 @@ def test_pipeline_enforces_evolve_block(mock_build, mock_fix, tmp_path):
     )
     pipeline = EvaluationPipeline(config, tmp_path, source_file)
 
-    mock_build.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
+    mock_clippy.return_value = MagicMock(success=False, error_output="err", elapsed_seconds=0.5)
 
     # Candidate has NO markers — LLM stripped them
     candidate = tmp_path / "candidate.rs"

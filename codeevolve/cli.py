@@ -29,7 +29,7 @@ from codeevolve.init_project import (
     insert_evolve_markers,
     regenerate_evaluator,
 )
-from codeevolve.runner import validate_server, run_evolution
+from codeevolve.runner import validate_server, run_evolution, run_evolution_with_rotation, find_latest_checkpoint
 from codeevolve.llama_server import LlamaServer
 from codeevolve.codex_proxy import CodexProxy
 from codeevolve.claude_proxy import ClaudeProxy
@@ -169,10 +169,16 @@ def run(config_path: Path, fresh: bool):
     project_path = config_path.parent.parent
 
     if fresh:
-        checkpoints_dir = project_path / ".codeevolve" / "output" / "checkpoints"
-        click.echo("  Clearing existing checkpoints (--fresh)...")
+        output_dir = project_path / ".codeevolve" / "output"
+        checkpoints_dir = output_dir / "checkpoints"
+        rotation_state_path = output_dir / "rotation_state.json"
+        click.echo("  Clearing existing checkpoints and rotation state (--fresh)...")
         try:
             shutil.rmtree(checkpoints_dir)
+        except FileNotFoundError:
+            pass
+        try:
+            rotation_state_path.unlink()
         except FileNotFoundError:
             pass
 
@@ -247,14 +253,90 @@ def run(config_path: Path, fresh: bool):
     click.echo(f"  Metrics CSV: {csv_path.relative_to(project_path)}")
     click.echo()
 
+    checkpoint_path = None
+    if not fresh:
+        checkpoint_path = find_latest_checkpoint(project_path / ".codeevolve" / "output")
+        if checkpoint_path:
+            iter_num = Path(checkpoint_path).name.split("_")[-1]
+            click.echo(f"  Resuming from checkpoint at iteration {iter_num}")
+
+    # Check if rotation is configured via tech debt ledger
+    schedule = None
+    if config.evolution.tech_debt_ledger:
+        from codeevolve.ledger import parse_ledger
+        from codeevolve.scheduler import build_schedule
+
+        ledger_path = project_path / config.evolution.tech_debt_ledger
+        entries = parse_ledger(ledger_path, prod_only=config.evolution.prod_only)
+        if entries:
+            top_entries = entries[:config.evolution.top_n_files]
+            # Filter to only entries that exist on disk AND have EVOLVE-BLOCK markers
+            valid_entries = []
+            for entry in top_entries:
+                full_path = project_path / entry.file_path
+                if full_path.exists():
+                    try:
+                        if "EVOLVE-BLOCK-START" in full_path.read_text(encoding="utf-8"):
+                            valid_entries.append(entry)
+                    except OSError:
+                        pass
+            if valid_entries:
+                schedule = build_schedule(
+                    valid_entries,
+                    total_iterations=config.evolution.max_iterations,
+                    chunk_size=config.evolution.checkpoint_interval,
+                )
+
     try:
-        result = run_evolution(config_path, project_path, marked_files, evaluator_path)
-        click.echo("\n-- Summary " + "-" * 45)
-        click.echo(f"  Best score:      {result.best_score:.2f}")
-        click.echo(f"  Best candidate:  .codeevolve/output/best/")
-        click.echo(f"  Metrics CSV:     .codeevolve/output/metrics.csv")
-        click.echo(f"  All candidates:  .codeevolve/output/")
+        if schedule:
+            click.echo(f"  Rotation schedule: {len(schedule)} slots across {len(set(s.file_path for s in schedule))} files")
+            results = run_evolution_with_rotation(
+                config_path, project_path, schedule, marked_files,
+                evaluator_path, checkpoint_path=checkpoint_path,
+            )
+            click.echo("\n-- Summary " + "-" * 45)
+            for file_path, result in results.items():
+                click.echo(f"  {file_path}: score {result.best_score:.2f}")
+            click.echo(f"  All best candidates: .codeevolve/output/best/")
+        else:
+            # No ledger configured — use round-robin if multiple files
+            if len(marked_files) > 1:
+                from codeevolve.scheduler import build_roundrobin_schedule
+
+                rr_schedule = build_roundrobin_schedule(
+                    [str(f.relative_to(project_path)) for f in marked_files],
+                    total_iterations=config.evolution.max_iterations,
+                    chunk_size=config.evolution.checkpoint_interval,
+                )
+                if rr_schedule:
+                    click.echo(f"  Round-robin schedule: {len(rr_schedule)} slots across {len(marked_files)} files")
+                    results = run_evolution_with_rotation(
+                        config_path, project_path, rr_schedule, marked_files,
+                        evaluator_path, checkpoint_path=checkpoint_path,
+                    )
+                    click.echo("\n-- Summary " + "-" * 45)
+                    for file_path, result in results.items():
+                        click.echo(f"  {file_path}: score {result.best_score:.2f}")
+                    click.echo(f"  All best candidates: .codeevolve/output/best/")
+                else:
+                    # Not enough iterations for even one chunk — single file fallback
+                    result = run_evolution(config_path, project_path, marked_files, evaluator_path, checkpoint_path=checkpoint_path)
+                    click.echo("\n-- Summary " + "-" * 45)
+                    click.echo(f"  Best score:      {result.best_score:.2f}")
+                    click.echo(f"  Best candidate:  .codeevolve/output/best/")
+                    click.echo(f"  Metrics CSV:     .codeevolve/output/metrics.csv")
+                    click.echo(f"  All candidates:  .codeevolve/output/")
+            else:
+                # Single file — use original path
+                result = run_evolution(config_path, project_path, marked_files, evaluator_path, checkpoint_path=checkpoint_path)
+                click.echo("\n-- Summary " + "-" * 45)
+                click.echo(f"  Best score:      {result.best_score:.2f}")
+                click.echo(f"  Best candidate:  .codeevolve/output/best/")
+                click.echo(f"  Metrics CSV:     .codeevolve/output/metrics.csv")
+                click.echo(f"  All candidates:  .codeevolve/output/")
     except KeyboardInterrupt:
         click.echo("\n\nStopped by user. Best result saved to .codeevolve/output/best/")
+        click.echo("  Resume with: codeevolve run")
     finally:
-        backend.stop()
+        if backend is not None:
+            backend.stop()

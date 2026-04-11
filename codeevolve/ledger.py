@@ -32,7 +32,7 @@ _COL_COMBINED = 4
 _MIN_COLS = 5
 
 
-@dataclass
+@dataclass(frozen=True)
 class LedgerEntry:
     """A single entry from the tech debt ledger."""
 

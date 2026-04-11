@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import logging
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 from urllib.request import urlopen
+
+if TYPE_CHECKING:
+    from codeevolve.scheduler import ScheduleSlot
+    from openevolve.api import EvolutionResult
 from urllib.error import URLError
 
 logger = logging.getLogger(__name__)
@@ -223,6 +229,41 @@ def _patch_extract_diffs() -> None:
     code_utils.extract_diffs = _patched
 
 
+def find_latest_checkpoint(output_dir: Path) -> str | None:
+    """Return the path to the latest valid checkpoint directory, or None.
+
+    Looks in ``output_dir / "checkpoints"`` for directories named
+    ``checkpoint_N`` where N is an integer.  Sorts by N descending and
+    returns the first one that contains a ``metadata.json`` file.
+
+    Args:
+        output_dir: The ``.codeevolve/output`` directory for the project.
+
+    Returns:
+        Absolute path string of the latest valid checkpoint, or ``None``.
+    """
+    checkpoints_dir = output_dir / "checkpoints"
+    if not checkpoints_dir.is_dir():
+        return None
+
+    candidates: list[tuple[int, Path]] = []
+    for entry in checkpoints_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        parts = entry.name.split("_")
+        if len(parts) == 2 and parts[0] == "checkpoint" and parts[1].isdigit():
+            candidates.append((int(parts[1]), entry))
+
+    # Sort descending by iteration number
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    for _n, path in candidates:
+        if (path / "metadata.json").exists():
+            return str(path)
+
+    return None
+
+
 def run_evolution(
     config_path: Path,
     project_path: Path,
@@ -342,6 +383,14 @@ def _run_single_file(
             checkpoint_path=checkpoint_path,
         ))
 
+        # Always save a final checkpoint so resume can pick up from here
+        if hasattr(controller, '_save_checkpoint') and hasattr(controller, 'database'):
+            try:
+                controller._save_checkpoint(controller.database.last_iteration)
+                logger.info("Saved final checkpoint at iteration %d", controller.database.last_iteration)
+            except Exception:
+                logger.warning("Failed to save final checkpoint", exc_info=True)
+
         # Build result
         best_score = 0.0
         metrics: dict = {}
@@ -456,6 +505,14 @@ def _run_multi_file(
             checkpoint_path=checkpoint_path,
         ))
 
+        # Always save a final checkpoint so resume can pick up from here
+        if hasattr(controller, '_save_checkpoint') and hasattr(controller, 'database'):
+            try:
+                controller._save_checkpoint(controller.database.last_iteration)
+                logger.info("Saved final checkpoint at iteration %d", controller.database.last_iteration)
+            except Exception:
+                logger.warning("Failed to save final checkpoint", exc_info=True)
+
         # Build result
         best_score = 0.0
         metrics: dict = {}
@@ -493,3 +550,145 @@ def _run_multi_file(
         (best_dir / focus_file.name).write_text(best_content, encoding="utf-8")
 
     return result
+
+
+def run_evolution_with_rotation(
+    config_path: Path,
+    project_path: Path,
+    schedule: list[ScheduleSlot],
+    all_source_files: list[Path],
+    evaluator_path: Path,
+    checkpoint_path: str | None = None,
+) -> dict[str, EvolutionResult]:
+    """Run evolution across multiple files following a rotation schedule.
+
+    Each ScheduleSlot assigns a file a contiguous block of iterations.
+    Each slot creates a fresh OpenEvolve population for that file.
+    Results and checkpoints are saved per-slot.
+
+    Args:
+        config_path: Path to evolution.yaml
+        project_path: Root of the Rust project
+        schedule: List of ScheduleSlot from build_schedule()
+        all_source_files: All marked files (for backup/restore and bundling context)
+        evaluator_path: Path to evaluator.py
+        checkpoint_path: Path to checkpoint to resume from (used to find rotation
+            state only; each slot starts a fresh OpenEvolve run)
+
+    Returns:
+        Dict mapping file_path to the best EvolutionResult for that file
+    """
+    from openevolve.api import EvolutionResult
+
+    # Apply monkey patches once at the start
+    _patch_extract_diffs()
+    _patch_feature_dimension_defaults()
+    _patch_logging_utf8()
+
+    config = load_config(config_path)
+
+    output_dir = project_path / ".codeevolve" / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine starting slot from rotation state
+    rotation_state_path = output_dir / "rotation_state.json"
+    start_slot_index = 0
+
+    if checkpoint_path is not None and rotation_state_path.exists():
+        try:
+            state = json.loads(rotation_state_path.read_text(encoding="utf-8"))
+            start_slot_index = state.get("current_slot_index", 0)
+            logger.info("Resuming rotation from slot %d", start_slot_index)
+        except (json.JSONDecodeError, OSError):
+            logger.warning("Could not read rotation state, starting from slot 0")
+
+    # Backup ALL source files once at the start
+    backups: dict[Path, Path] = {}
+    for f in all_source_files:
+        rel = f.relative_to(project_path)
+        backup_name = rel.as_posix().replace("/", "__") + ".backup"
+        backup_path = output_dir / backup_name
+        backup_path.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+        backups[f] = backup_path
+    logger.info("Saved %d source backups for rotation", len(backups))
+
+    results: dict[str, EvolutionResult] = {}
+    best_dir = output_dir / "best"
+    best_dir.mkdir(exist_ok=True)
+
+    try:
+        for i, slot in enumerate(schedule):
+            if i < start_slot_index:
+                logger.info("Skipping completed slot %d/%d (%s)", i + 1, len(schedule), slot.file_path)
+                continue
+
+            slot_iterations = slot.end_iter - slot.start_iter
+            logger.info(
+                "  [Slot %d/%d] Evolving %s (iterations %d-%d)",
+                i + 1, len(schedule), slot.file_path, slot.start_iter, slot.end_iter,
+            )
+
+            # Find the actual Path object for slot.file_path from all_source_files
+            source_file = None
+            for f in all_source_files:
+                rel = f.relative_to(project_path)
+                if rel.as_posix() == slot.file_path or str(rel) == slot.file_path:
+                    source_file = f
+                    break
+
+            if source_file is None:
+                logger.warning("Could not find source file for slot: %s, skipping", slot.file_path)
+                continue
+
+            # Create a per-slot output directory
+            slot_output_dir = output_dir / f"slot_{i}"
+            slot_output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create a copy of config with modified max_iterations for this slot
+            slot_config = copy.deepcopy(config)
+            slot_config.evolution.max_iterations = slot_iterations
+
+            # Call _run_single_file for this slot
+            result = _run_single_file(
+                slot_config,
+                config_path,
+                project_path,
+                source_file,
+                evaluator_path,
+                slot_output_dir,
+                checkpoint_path=None,  # each slot is a fresh OE run
+            )
+
+            results[slot.file_path] = result
+
+            # Save best result to output/best/
+            if result.best_code:
+                (best_dir / source_file.name).write_text(result.best_code, encoding="utf-8")
+
+            # Save rotation state after each slot
+            rotation_state = {
+                "current_slot_index": i + 1,
+                "schedule": [
+                    {
+                        "file_path": s.file_path,
+                        "start_iter": s.start_iter,
+                        "end_iter": s.end_iter,
+                    }
+                    for s in schedule
+                ],
+            }
+            rotation_state_path.write_text(
+                json.dumps(rotation_state, indent=2),
+                encoding="utf-8",
+            )
+            logger.info("Saved rotation state: slot %d/%d complete", i + 1, len(schedule))
+    finally:
+        # Restore ALL original source files
+        for f, backup in backups.items():
+            try:
+                f.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+            except OSError:
+                logger.warning("Failed to restore backup for %s", f)
+        logger.info("Restored %d source files from backups", len(backups))
+
+    return results

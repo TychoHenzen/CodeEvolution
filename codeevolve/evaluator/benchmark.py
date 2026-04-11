@@ -139,6 +139,59 @@ def measure_release_binary_size(
     return size
 
 
+def find_release_binary_size(
+    project_path: Path,
+    binary_package: str,
+    target_dir: Optional[str] = None,
+    upx_path: Optional[str] = None,
+    upx_args: Optional[list[str]] = None,
+) -> int:
+    """Measure the size of an already-built release binary, optionally after UPX.
+
+    Assumes the release binary already exists (e.g. from cargo clippy --release).
+    Returns size in bytes, or 0 if the binary is not found.
+    """
+    import platform
+
+    target_base = Path(target_dir) if target_dir else project_path / "target"
+    release_dir = target_base / "release"
+
+    is_windows = platform.system() == "Windows"
+    if is_windows:
+        binary_path = release_dir / f"{binary_package}.exe"
+    else:
+        binary_path = release_dir / binary_package
+
+    if not binary_path.exists():
+        alt = release_dir / (f"{binary_package}.exe" if not is_windows else binary_package)
+        if alt.exists():
+            binary_path = alt
+        else:
+            logger.warning(
+                "Release binary not found at %s (or %s)", binary_path, alt,
+            )
+            return 0
+
+    if upx_path:
+        upx_cmd = [upx_path] + (upx_args or []) + [str(binary_path)]
+        try:
+            proc = subprocess.run(
+                upx_cmd, capture_output=True, text=True, timeout=120,
+            )
+            if proc.returncode != 0:
+                logger.warning("UPX compression failed: %s", proc.stderr[:300])
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.warning("UPX error: %s", e)
+
+    size = binary_path.stat().st_size
+    logger.info(
+        "Release binary size for %s: %d bytes (%s)",
+        binary_package, size,
+        "UPX-compressed" if upx_path else "uncompressed",
+    )
+    return size
+
+
 def measure_loc(program_path: Path) -> int:
     """Count non-empty, non-comment lines in the evolved file."""
     total = 0

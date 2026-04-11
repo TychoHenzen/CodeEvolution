@@ -72,14 +72,13 @@ _MAX_CONSECUTIVE_DUPLICATES_WARN = 10
 from codeevolve.evaluator.cargo import (
     compute_clippy_score,
     run_cargo_build,
+    run_cargo_clean,
     run_cargo_clippy,
     run_cargo_test,
 )
 from codeevolve.evaluator.benchmark import (
-    measure_binary_size,
-    measure_compile_time,
+    find_release_binary_size,
     measure_loc,
-    measure_release_binary_size,
     run_user_benchmark,
 )
 from codeevolve.evaluator.llm_judge import judge_code
@@ -476,15 +475,24 @@ class EvaluationPipeline:
             self.focus_file.write_text(original_code, encoding="utf-8")
 
     def _evaluate_candidate(self) -> EvaluationResult:
-        """Run the 4-layer pipeline on the candidate already written to disk."""
+        """Run the unified pipeline on the candidate already written to disk.
+
+        Single-build flow:
+        1. cargo clean + cargo clippy --release  →  build gate, clippy, compile time, release artifacts
+        2. cargo test                            →  test gate
+        3. cargo bench / custom benchmark        →  reuses release artifacts
+        4. UPX + binary size                     →  from release artifacts already on disk
+        """
         project_path = self.project_path
         cargo = self.config.rust.cargo_path
+        jobs = self.config.rust.jobs
         cfg = self.config
 
-        # --- Layer 1: Hard gates (with LLM fix retries) ---
+        # --- Layer 1: cargo clippy --release (build gate + lints + compile time) ---
         max_attempts = cfg.evolution.max_fix_attempts + 1  # initial + retries
-        build = None
+        clippy = None
         test = None
+        compile_time = 0.0
         previous_fix_attempts: list[str] = []
         seen_fix_outputs: set[str] = set()
 
@@ -520,21 +528,36 @@ class EvaluationPipeline:
             )
             return True
 
+        # Clean once before the first attempt for accurate compile-time baseline
+        if cfg.benchmarks.measure_compile_time:
+            run_cargo_clean(project_path, cargo)
+
         for attempt in range(max_attempts):
             is_last_attempt = attempt == max_attempts - 1
             attempt_label = f"[attempt {attempt + 1}/{max_attempts}]" if max_attempts > 1 else ""
 
-            build = run_cargo_build(project_path, cargo, cfg.rust.target_dir)
-            if not build.success:
+            clippy = run_cargo_clippy(
+                project_path, cargo, cfg.rust.clippy_args or None,
+                release=True, jobs=jobs,
+            )
+
+            # Record compile time from first attempt (clean build)
+            if attempt == 0:
+                compile_time = clippy.elapsed_seconds
+
+            if not clippy.success:
                 if not is_last_attempt and _attempt_fix_and_track(
-                    "compile", build.error_output, attempt, attempt_label,
+                    "compile", clippy.error_output, attempt, attempt_label,
                     test_context="",
                 ):
                     continue
-                logger.info("Layer 1 FAIL: cargo build failed (%.1fs)", build.elapsed_seconds)
+                logger.info(
+                    "Layer 1 FAIL: cargo clippy --release failed (%.1fs)",
+                    clippy.elapsed_seconds,
+                )
                 return EvaluationResult(
                     passed_gates=False, combined_score=0.0,
-                    build_time=build.elapsed_seconds, error=build.error_output,
+                    build_time=clippy.elapsed_seconds, error=clippy.error_output,
                 )
 
             test = run_cargo_test(project_path, cargo, cfg.rust.test_args or None)
@@ -554,7 +577,7 @@ class EvaluationPipeline:
                 )
                 return EvaluationResult(
                     passed_gates=False, combined_score=0.0,
-                    build_time=build.elapsed_seconds,
+                    build_time=clippy.elapsed_seconds,
                     tests_passed=test.tests_passed, tests_failed=test.tests_failed,
                     error=test.error_output,
                 )
@@ -562,13 +585,12 @@ class EvaluationPipeline:
             break
 
         logger.info(
-            "Layer 1 PASS: build %.1fs, %d/%d tests passed",
-            build.elapsed_seconds, test.tests_passed,
+            "Layer 1 PASS: clippy+release %.1fs, %d/%d tests passed",
+            clippy.elapsed_seconds, test.tests_passed,
             test.tests_passed + test.tests_failed,
         )
 
-        # --- Layer 2: Static analysis ---
-        clippy = run_cargo_clippy(project_path, cargo, cfg.rust.clippy_args or None)
+        # --- Layer 2: Static analysis (already collected by clippy above) ---
         raw_static = compute_clippy_score(clippy.warning_counts, cfg.fitness.clippy_weights)
         penalty = abs(raw_static)
         norm_static = 1.0 / (1.0 + penalty)
@@ -580,27 +602,28 @@ class EvaluationPipeline:
         )
 
         # --- Layer 3: Performance ---
-        compile_time = 0.0
-        binary_size = 0
         loc = measure_loc(self.focus_file)
+        binary_size = 0
         bench_score: Optional[float] = None
 
-        if cfg.benchmarks.measure_compile_time:
-            compile_time = measure_compile_time(project_path, cargo)
-
-        if cfg.benchmarks.measure_binary_size:
-            if cfg.benchmarks.binary_package:
-                binary_size = measure_release_binary_size(
+        # cargo clippy compiles but doesn't link — run cargo build --release
+        # to produce the binary.  Compilation is cached so this is link-only (fast).
+        if cfg.benchmarks.measure_binary_size and cfg.benchmarks.binary_package:
+            link = run_cargo_build(
+                project_path, cargo, cfg.rust.target_dir, release=True, jobs=jobs,
+            )
+            if link.success:
+                binary_size = find_release_binary_size(
                     project_path,
                     cfg.benchmarks.binary_package,
-                    cargo_path=cargo,
                     target_dir=cfg.rust.target_dir,
                     upx_path=cfg.benchmarks.upx_path,
                     upx_args=cfg.benchmarks.upx_args,
                 )
             else:
-                binary_size = measure_binary_size(project_path, cfg.rust.target_dir)
+                logger.warning("Release link failed: %s", link.error_output[:200])
 
+        # Benchmark (reuses release artifacts — cargo bench builds in release by default)
         if cfg.benchmarks.custom_command:
             bench_result = run_user_benchmark(
                 cfg.benchmarks.custom_command,
@@ -631,7 +654,7 @@ class EvaluationPipeline:
             perf_ratios.append(compile_ratio)
 
         binary_ratio = 1.0
-        if cfg.benchmarks.measure_binary_size:
+        if cfg.benchmarks.measure_binary_size and cfg.benchmarks.binary_package:
             if self._baseline_binary_size and binary_size:
                 binary_ratio = self._baseline_binary_size / binary_size
             perf_ratios.append(binary_ratio)
@@ -704,7 +727,7 @@ class EvaluationPipeline:
             static_score=norm_static,
             perf_score=perf_ratio,
             llm_score=norm_llm,
-            build_time=build.elapsed_seconds,
+            build_time=clippy.elapsed_seconds,
             tests_passed=test.tests_passed,
             tests_failed=test.tests_failed,
             clippy_warnings=len(clippy.warnings),

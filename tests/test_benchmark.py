@@ -7,6 +7,7 @@ import pytest
 
 from codeevolve.evaluator.benchmark import (
     _extract_score,
+    find_release_binary_size,
     measure_binary_size,
     measure_compile_time,
     measure_loc,

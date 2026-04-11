@@ -9,6 +9,7 @@ from codeevolve.evaluator.cargo import (
     CargoResult,
     parse_clippy_json,
     run_cargo_build,
+    run_cargo_clean,
     run_cargo_clippy,
     run_cargo_test,
     categorize_lint,

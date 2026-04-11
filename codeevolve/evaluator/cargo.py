@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from codeevolve.config import ClippyWeights
 
@@ -71,14 +74,22 @@ class CargoResult:
 
 
 def run_cargo_build(
-    project_path: Path, cargo_path: str = "cargo", target_dir: Optional[str] = None
+    project_path: Path,
+    cargo_path: str = "cargo",
+    target_dir: Optional[str] = None,
+    release: bool = False,
+    jobs: Optional[int] = None,
 ) -> CargoResult:
     """Run cargo build and return success/failure with timing."""
     cmd = [cargo_path, "build"]
+    if release:
+        cmd.append("--release")
     if target_dir:
         cmd.extend(["--target-dir", target_dir])
+    if jobs:
+        cmd.extend(["-j", str(jobs)])
     start = time.monotonic()
-    proc = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=300)
     elapsed = time.monotonic() - start
     return CargoResult(
         success=proc.returncode == 0,
@@ -88,14 +99,20 @@ def run_cargo_build(
 
 
 def run_cargo_test(
-    project_path: Path, cargo_path: str = "cargo", extra_args: Optional[list[str]] = None
+    project_path: Path,
+    cargo_path: str = "cargo",
+    extra_args: Optional[list[str]] = None,
 ) -> CargoResult:
-    """Run cargo test and parse pass/fail counts."""
+    """Run cargo test and parse pass/fail counts.
+
+    No -j flag here: clippy already compiled everything, so test only needs
+    to link the test harness and run.  Limiting jobs just slows it down.
+    """
     cmd = [cargo_path, "test"]
     if extra_args:
         cmd.extend(extra_args)
     start = time.monotonic()
-    proc = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=300)
     elapsed = time.monotonic() - start
     passed = 0
     failed = 0
@@ -132,7 +149,12 @@ def run_cargo_test(
 
 
 def parse_clippy_json(raw_json: str) -> list[dict]:
-    """Parse clippy --message-format=json output into a list of warning dicts."""
+    """Parse clippy --message-format=json output into a list of warning dicts.
+
+    Accepts both clippy-specific lints (clippy::*) and standard compiler
+    warnings (unused_parens, non_snake_case, etc.).  Warnings without a
+    code field are included with code "unknown".
+    """
     warnings = []
     try:
         data = json.loads(raw_json)
@@ -157,40 +179,75 @@ def parse_clippy_json(raw_json: str) -> list[dict]:
         msg = item.get("message", {})
         if msg.get("level") != "warning":
             continue
-        code_info = msg.get("code")
-        if not code_info or not code_info.get("code"):
+        # Skip the summary "N warnings emitted" message (has no spans)
+        spans = msg.get("spans", [])
+        if not spans:
             continue
-        code = code_info["code"]
+        code_info = msg.get("code")
+        code = code_info["code"] if code_info and code_info.get("code") else "unknown"
         warnings.append({
             "code": code,
             "message": msg.get("message", ""),
             "level": msg.get("level", "warning"),
-            "file": msg.get("spans", [{}])[0].get("file_name", ""),
-            "line": msg.get("spans", [{}])[0].get("line_start", 0),
+            "file": spans[0].get("file_name", ""),
+            "line": spans[0].get("line_start", 0),
         })
     return warnings
+
+
+def run_cargo_clean(project_path: Path, cargo_path: str = "cargo") -> None:
+    """Run cargo clean to remove cached build artifacts."""
+    subprocess.run(
+        [cargo_path, "clean"], cwd=project_path, capture_output=True, timeout=30,
+    )
 
 
 def run_cargo_clippy(
     project_path: Path,
     cargo_path: str = "cargo",
     extra_args: Optional[list[str]] = None,
+    release: bool = False,
+    jobs: Optional[int] = None,
 ) -> CargoResult:
-    """Run cargo clippy with JSON output and parse warnings."""
+    """Run cargo clippy with JSON output and parse warnings.
+
+    With release=True, compiles in release mode so a single invocation
+    produces release artifacts, lint diagnostics, and compile-time data.
+    """
     cmd = [cargo_path, "clippy", "--message-format=json"]
+    if release:
+        cmd.append("--release")
+    if jobs:
+        cmd.extend(["-j", str(jobs)])
     if extra_args:
         cmd.extend(extra_args)
     start = time.monotonic()
-    proc = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=300)
     elapsed = time.monotonic() - start
     warnings = parse_clippy_json(proc.stdout)
     counts: dict[str, int] = {}
     for w in warnings:
         cat = categorize_lint(w["code"])
         counts[cat] = counts.get(cat, 0) + 1
+
+    # Count total JSON messages vs warnings for diagnostics
+    json_lines = sum(1 for line in proc.stdout.splitlines() if line.strip().startswith("{"))
+    stderr_warning_lines = sum(
+        1 for line in proc.stderr.splitlines() if "warning" in line.lower()
+    )
+    if warnings:
+        logger.info("clippy: %d warnings from %d JSON messages", len(warnings), json_lines)
+    elif stderr_warning_lines > 0:
+        logger.warning(
+            "clippy: 0 parsed warnings but %d 'warning' lines in stderr "
+            "(%d JSON messages on stdout) — check parse_clippy_json",
+            stderr_warning_lines, json_lines,
+        )
+
     return CargoResult(
-        success=proc.returncode == 0 or len(warnings) >= 0,
+        success=proc.returncode == 0,
         elapsed_seconds=elapsed,
+        error_output=proc.stderr if proc.returncode != 0 else "",
         warnings=warnings,
         warning_counts=counts,
     )
