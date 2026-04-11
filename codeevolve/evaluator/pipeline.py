@@ -468,8 +468,11 @@ class EvaluationPipeline:
                     fixed_evolve = self._extract_evolve_content(current_code)
                     if self._is_bundle(raw_candidate):
                         from codeevolve.bundler import replace_focus
-                        fixed_bundle = replace_focus(raw_candidate, fixed_evolve)
-                        Path(program_path).write_text(fixed_bundle, encoding="utf-8")
+                        try:
+                            fixed_bundle = replace_focus(raw_candidate, fixed_evolve)
+                            Path(program_path).write_text(fixed_bundle, encoding="utf-8")
+                        except ValueError:
+                            logger.warning("Fixer writeback: replace_focus failed, bundle may be malformed")
                     else:
                         Path(program_path).write_text(fixed_evolve, encoding="utf-8")
                     logger.info("Fixer writeback: updated program_path with fixed code")
