@@ -158,6 +158,35 @@ class TestRotationCallsSingleFile:
         second_call_source = mock_rsf.call_args_list[1][0][2]
         assert second_call_source == source_files[1]
 
+    def test_regenerates_evaluator_for_each_slot(self, tmp_path: Path):
+        project_path = tmp_path / "project"
+        project_path.mkdir()
+        config_path = _make_config_path(project_path)
+        evaluator_path = _make_evaluator(project_path)
+
+        source_files = _setup_source_files(project_path, [
+            "src/render.rs",
+            "src/shape.rs",
+        ])
+
+        schedule = [
+            ScheduleSlot(file_path="src/render.rs", start_iter=0, end_iter=50),
+            ScheduleSlot(file_path="src/shape.rs", start_iter=50, end_iter=100),
+        ]
+
+        mock_result = _make_mock_result()
+
+        with patch("codeevolve.runner.regenerate_evaluator") as mock_regen:
+            with patch("codeevolve.runner._run_single_file", return_value=mock_result):
+                run_evolution_with_rotation(
+                    config_path, project_path, schedule, source_files,
+                    evaluator_path,
+                )
+
+        assert mock_regen.call_count == 2
+        assert mock_regen.call_args_list[0].kwargs["focus_file"] == source_files[0]
+        assert mock_regen.call_args_list[1].kwargs["focus_file"] == source_files[1]
+
     def test_each_slot_gets_own_output_dir(self, tmp_path: Path):
         project_path = tmp_path / "project"
         project_path.mkdir()

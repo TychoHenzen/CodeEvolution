@@ -2,7 +2,7 @@
 # All fields have sensible defaults for Rust + llama.cpp on RTX 4060 (8GB VRAM)
 
 # Provider: "local", "codex", "claude", or "mixed" (randomly alternates codex + claude)
-provider: "codex"
+provider: "mixed"
 
 # Glob patterns controlling which Rust source files are included in evolution
 include_globs:
@@ -79,9 +79,9 @@ benchmarks:
     - "--force"
 
 llm_judgment:
-  enabled: false
+  enabled: true
   top_quartile_only: false
-  num_runs: 3
+  num_runs: 1
   dimensions:
     - readability
     - rust_idiomaticity

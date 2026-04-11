@@ -86,10 +86,10 @@ _TIME_UNIT_TO_MS = {"s": 1000.0, "ms": 1.0, "µs": 0.001, "us": 0.001, "ns": 0.0
 def _extract_score(regex: str, text: str) -> float:
     """Extract a numeric score from text using a regex.
 
-    If the regex has one capture group, the raw number is returned.
-    If it has two groups and the second is a time unit (s/ms/µs/us/ns),
-    the value is normalized to milliseconds. This handles Criterion
-    output where different benchmarks report in different units.
+    The regex may contain extra capture groups, including time units from
+    Criterion output. We look for the first capture group that parses as a
+    float, then normalize it if an adjacent or nearby capture group is a
+    recognized time unit.
     """
     try:
         match = re.search(regex, text)
@@ -103,10 +103,47 @@ def _extract_score(regex: str, text: str) -> float:
         ) from e
     if not match:
         return 0.0
-    score = float(match.group(1))
-    if match.lastindex and match.lastindex >= 2:
-        unit = match.group(2)
-        score *= _TIME_UNIT_TO_MS.get(unit, 1.0)
+
+    groups = list(match.groups())
+    numeric_groups: list[tuple[int, float]] = []
+    for idx, group in enumerate(groups):
+        if group is None:
+            continue
+        try:
+            numeric_groups.append((idx, float(group)))
+        except ValueError:
+            continue
+
+    if not numeric_groups:
+        logger.warning(
+            "custom_command_score_regex matched text but no numeric capture was found; "
+            "pattern=%r text=%r",
+            regex,
+            text[:200],
+        )
+        return 0.0
+
+    # Criterion reports time as fastest / average / slowest. When the regex
+    # captures multiple numeric values, the average is the middle capture.
+    value_index, score = numeric_groups[len(numeric_groups) // 2]
+
+    unit: str | None = None
+    for idx in (value_index + 1, value_index - 1):
+        if 0 <= idx < len(groups):
+            candidate = groups[idx]
+            if candidate in _TIME_UNIT_TO_MS:
+                unit = candidate
+                break
+
+    if unit is None:
+        for group in groups:
+            if group in _TIME_UNIT_TO_MS:
+                unit = group
+                break
+
+    if unit is not None:
+        score *= _TIME_UNIT_TO_MS[unit]
+
     return score
 
 

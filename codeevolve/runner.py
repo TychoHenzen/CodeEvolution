@@ -54,6 +54,7 @@ def _normalize_llm_diffs(text: str) -> str:
 import yaml
 
 from codeevolve.config import CodeEvolveConfig, load_config
+from codeevolve.init_project import regenerate_evaluator
 
 
 def build_openevolve_config_yaml(
@@ -551,6 +552,10 @@ def run_evolution_with_rotation(
             # Create a copy of config with modified max_iterations for this slot
             slot_config = copy.deepcopy(config)
             slot_config.evolution.max_iterations = slot_iterations
+
+            # Regenerate evaluator.py so the pipeline focus file matches the
+            # source file assigned to this slot.
+            regenerate_evaluator(project_path, config_path, focus_file=source_file)
 
             result = _run_single_file(
                 slot_config,

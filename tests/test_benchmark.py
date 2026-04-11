@@ -117,12 +117,34 @@ def test_run_user_benchmark_timeout_no_regex(tmp_path: Path):
 # --- Unit normalization tests ---
 
 CRITERION_REGEX = r"time:\s+\[\S+ \S+\s+([\d.]+) (s|ms|µs|us|ns)"
+CRITERION_REGEX_UNITS_FIRST = (
+    r"time:\s+\[\d+(?:\.\d+)?\s*(s|ms|µs|us|ns)\s+"
+    r"(\d+(?:\.\d+)?)\s*(s|ms|µs|us|ns)\s+"
+    r"\d+(?:\.\d+)?\s*(s|ms|µs|us|ns)\]"
+)
+CRITERION_REGEX_ALL_VALUES = (
+    r"time:\s+\[([\d.]+) (s|ms|µs|us|ns)\s+"
+    r"([\d.]+) (s|ms|µs|us|ns)\s+"
+    r"([\d.]+) (s|ms|µs|us|ns)\]"
+)
 
 
 def test_extract_score_microseconds():
     text = "foo/100 time:   [58.200 µs 61.000 µs 63.800 µs]"
     score = _extract_score(CRITERION_REGEX, text)
     assert score == pytest.approx(0.061)  # 61 µs → 0.061 ms
+
+
+def test_extract_score_microseconds_units_first_regex():
+    text = "foo/100 time:   [58.200 µs 61.000 µs 63.800 µs]"
+    score = _extract_score(CRITERION_REGEX_UNITS_FIRST, text)
+    assert score == pytest.approx(0.061)  # 61 µs → 0.061 ms
+
+
+def test_extract_score_microseconds_all_values_regex():
+    text = "foo/100 time:   [58.200 µs 61.000 µs 63.800 µs]"
+    score = _extract_score(CRITERION_REGEX_ALL_VALUES, text)
+    assert score == pytest.approx(0.061)  # average, not fastest
 
 
 def test_extract_score_milliseconds():
