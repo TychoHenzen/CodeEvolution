@@ -36,7 +36,7 @@ def test_evaluation_result_fields():
         passed_gates=True,
         combined_score=0.75,
         static_score=0.8,
-        perf_score=1.05,
+        perf_score=0.75,
         llm_score=0.0,
     )
     assert r.combined_score == 0.75
@@ -271,6 +271,7 @@ def test_perf_score_is_norm_perf_not_raw_ratio(mock_clean, mock_clippy, mock_tes
     # At baseline: perf_ratio=1.0, norm_perf=max(0, min(1, 1.0/2.0))=0.5
     assert result.perf_score == 0.5
     # NOT 1.0 (which would be the raw perf_ratio)
+    assert result.perf_ratio == 1.0
 
 
 @patch("codeevolve.evaluator.pipeline.judge_code")

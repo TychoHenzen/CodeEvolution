@@ -144,7 +144,7 @@ def _build_openevolve_metrics(result) -> dict:
     return {
         "combined_score": result.combined_score / 2.0,
         "static_score": result.static_score / 2.0,
-        "perf_score": result.perf_score,
+        "perf_ratio": result.perf_ratio,
         "llm_score": result.llm_score / 2.0,
         "compile_time": result.compile_time,
         "binary_size": result.binary_size,
@@ -171,6 +171,7 @@ def test_openevolve_metrics_exclude_raw_counts():
         combined_score=0.8,
         static_score=0.9,
         perf_score=0.5,
+        perf_ratio=1.0,
         llm_score=0.6,
         build_time=3.5,
         tests_passed=42,
@@ -195,7 +196,8 @@ def test_openevolve_metrics_halve_bounded_scores():
         passed_gates=True,
         combined_score=0.8,
         static_score=1.0,   # perfect static
-        perf_score=0.5,      # baseline norm_perf
+        perf_score=0.5,      # baseline norm_perf (internal, not sent to OpenEvolve)
+        perf_ratio=1.0,      # baseline raw ratio (sent to OpenEvolve)
         llm_score=0.7,
         binary_size=1.0,
         compile_time=1.0,
@@ -205,23 +207,25 @@ def test_openevolve_metrics_halve_bounded_scores():
     assert metrics["combined_score"] == 0.4    # 0.8 / 2.0
     assert metrics["static_score"] == 0.5      # 1.0 / 2.0
     assert metrics["llm_score"] == 0.35        # 0.7 / 2.0
-    # perf_score is NOT halved (already a ratio centred at 0.5)
-    assert metrics["perf_score"] == 0.5
+    # perf_ratio uses raw ratio (baseline=1.0), consistent with compile_time/binary_size/loc
+    assert metrics["perf_ratio"] == 1.0
 
 
 def test_openevolve_metrics_pass_through_ratios():
-    """Ratio-based metrics (compile_time, binary_size, loc) pass through unchanged."""
+    """Ratio-based metrics (perf_score, compile_time, binary_size, loc) pass through unchanged."""
     result = EvaluationResult(
         passed_gates=True,
         combined_score=0.5,
         static_score=0.8,
         perf_score=0.5,
+        perf_ratio=1.15,     # 15% performance improvement over baseline
         llm_score=0.0,
         compile_time=1.2,    # 20% faster than baseline
         binary_size=0.85,    # 15% larger than baseline
         loc=1.1,             # 10% fewer LoC
     )
     metrics = _build_openevolve_metrics(result)
+    assert metrics["perf_ratio"] == 1.15
     assert metrics["compile_time"] == 1.2
     assert metrics["binary_size"] == 0.85
     assert metrics["loc"] == 1.1
@@ -234,6 +238,7 @@ def test_csv_metrics_include_everything():
         combined_score=0.8,
         static_score=0.9,
         perf_score=0.5,
+        perf_ratio=1.0,
         llm_score=0.6,
         build_time=2.5,
         tests_passed=10,
@@ -266,6 +271,7 @@ def test_openevolve_metrics_all_values_comparable_scale():
         combined_score=0.8,
         static_score=1.0,
         perf_score=0.5,
+        perf_ratio=1.0,
         llm_score=0.7,
         build_time=5.0,
         tests_passed=100,    # would dominate if included

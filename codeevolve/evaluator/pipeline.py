@@ -123,6 +123,7 @@ class EvaluationResult:
     combined_score: float
     static_score: float = 0.0
     perf_score: float = 0.0
+    perf_ratio: float = 1.0
     llm_score: float = 0.0
     build_time: float = 0.0
     tests_passed: int = 0
@@ -710,6 +711,7 @@ class EvaluationPipeline:
             combined_score=combined,
             static_score=norm_static,
             perf_score=norm_perf,
+            perf_ratio=perf_ratio,
             llm_score=norm_llm,
             build_time=clippy.elapsed_seconds,
             tests_passed=test.tests_passed,
