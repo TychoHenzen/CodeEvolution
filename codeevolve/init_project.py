@@ -37,14 +37,6 @@ def find_cargo_toml(project_path: Path) -> Path:
     return cargo_toml
 
 
-def scan_rs_files(project_path: Path) -> list[Path]:
-    """Find all .rs files under src/."""
-    src_dir = project_path / "src"
-    if not src_dir.exists():
-        return []
-    return sorted(src_dir.rglob("*.rs"))
-
-
 def insert_evolve_markers(rs_file: Path) -> None:
     """Wrap file content in EVOLVE-BLOCK markers if not already present."""
     content = rs_file.read_text(encoding="utf-8")
@@ -57,27 +49,9 @@ def insert_evolve_markers(rs_file: Path) -> None:
 def regenerate_evaluator(
     project_path: Path,
     config_path: Path,
-    source_file: Optional[Path] = None,
-    *,
-    source_files: Optional[list[Path]] = None,
-    focus_file: Optional[Path] = None,
+    focus_file: Path,
 ) -> None:
-    """Regenerate evaluator.py from the template without touching config or markers.
-
-    Accepts either:
-    - ``source_file`` (legacy single-file path, backward compatible)
-    - ``source_files`` + ``focus_file`` (workspace mode)
-
-    When only ``source_file`` is provided, ``source_files`` defaults to
-    ``[source_file]`` and ``focus_file`` defaults to ``source_file``.
-    """
-    # Backward compatibility: single source_file -> list of one
-    if source_files is None:
-        if source_file is None:
-            raise ValueError("Either source_file or source_files must be provided")
-        source_files = [source_file]
-    if focus_file is None:
-        focus_file = source_files[0] if source_files else source_file
+    """Regenerate evaluator.py from the template without touching config or markers."""
 
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
@@ -91,7 +65,6 @@ def regenerate_evaluator(
         codeevolve_package_path=codeevolve_package_path.replace("\\", "/"),
         config_path=str(config_path.resolve()).replace("\\", "/"),
         project_path=str(project_path.resolve()).replace("\\", "/"),
-        source_files=[str(f.resolve()).replace("\\", "/") for f in source_files],
         focus_file=str(focus_file.resolve()).replace("\\", "/"),
     )
     (config_path.parent / "evaluator.py").write_text(evaluator_code)
@@ -131,11 +104,7 @@ def generate_codeevolve_dir(
         yaml.dump(config_data, f, Dumper=_ConfigDumper, default_flow_style=False, sort_keys=False)
 
     # --- Generate evaluator.py ---
-    regenerate_evaluator(
-        project_path, config_path,
-        source_files=rs_files,
-        focus_file=rs_files[0],
-    )
+    regenerate_evaluator(project_path, config_path, focus_file=rs_files[0])
 
     # --- Generate README.md ---
     file_list = "\n".join(f"  - {f.relative_to(project_path)}" for f in rs_files)

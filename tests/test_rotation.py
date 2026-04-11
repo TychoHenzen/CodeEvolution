@@ -151,11 +151,11 @@ class TestRotationCallsSingleFile:
                 evaluator_path,
             )
 
-        # Check the initial_program (4th positional arg) matches the expected file
-        first_call_source = mock_rsf.call_args_list[0][0][3]
+        # Check the initial_program (3rd positional arg) matches the expected file
+        first_call_source = mock_rsf.call_args_list[0][0][2]
         assert first_call_source == source_files[0]
 
-        second_call_source = mock_rsf.call_args_list[1][0][3]
+        second_call_source = mock_rsf.call_args_list[1][0][2]
         assert second_call_source == source_files[1]
 
     def test_each_slot_gets_own_output_dir(self, tmp_path: Path):
@@ -182,9 +182,9 @@ class TestRotationCallsSingleFile:
                 evaluator_path,
             )
 
-        # output_dir is the 6th positional arg
-        first_output_dir = mock_rsf.call_args_list[0][0][5]
-        second_output_dir = mock_rsf.call_args_list[1][0][5]
+        # output_dir is the 5th positional arg
+        first_output_dir = mock_rsf.call_args_list[0][0][4]
+        second_output_dir = mock_rsf.call_args_list[1][0][4]
 
         assert first_output_dir != second_output_dir
         assert "slot_0" in str(first_output_dir)
@@ -335,7 +335,7 @@ class TestRotationResume:
 
         # Only the 3rd slot (index 2) should have been executed
         assert mock_rsf.call_count == 1
-        called_source = mock_rsf.call_args_list[0][0][3]
+        called_source = mock_rsf.call_args_list[0][0][2]
         assert called_source == source_files[2]  # src/path.rs
 
     def test_resume_without_checkpoint_path_starts_from_zero(self, tmp_path: Path):

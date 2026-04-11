@@ -7,7 +7,6 @@ rust-analyzer, no AST parsing.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path
 
@@ -276,18 +275,3 @@ def summarize_files(files: list[Path], project_path: Path) -> dict[Path, str]:
         result[f] = summarize_rs_file(f, project_path)
     return result
 
-
-# ---------------------------------------------------------------------------
-# Content hash
-# ---------------------------------------------------------------------------
-
-def content_hash(content: str) -> str:
-    """SHA-256 hash of content string, for cache keying.
-
-    Args:
-        content: Text content to hash.
-
-    Returns:
-        Hex-encoded SHA-256 digest.
-    """
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()

@@ -8,24 +8,10 @@ import pytest
 from codeevolve.evaluator.benchmark import (
     _extract_score,
     find_release_binary_size,
-    measure_binary_size,
-    measure_compile_time,
     measure_loc,
     run_user_benchmark,
     BenchmarkResult,
 )
-
-
-def test_measure_compile_time(sample_crate: Path):
-    seconds = measure_compile_time(sample_crate)
-    assert seconds > 0
-
-
-def test_measure_binary_size(sample_crate: Path):
-    import subprocess
-    subprocess.run(["cargo", "build"], cwd=sample_crate, capture_output=True)
-    size_bytes = measure_binary_size(sample_crate)
-    assert size_bytes > 0
 
 
 def test_measure_loc(tmp_path: Path):

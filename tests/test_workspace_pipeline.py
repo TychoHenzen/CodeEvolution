@@ -17,76 +17,29 @@ from codeevolve.evaluator.pipeline import EvaluationPipeline, EvaluationResult
 # Constructor tests
 # ---------------------------------------------------------------------------
 
-def test_pipeline_accepts_source_file_positional(tmp_path):
-    """Legacy positional source_file parameter still works."""
+def test_pipeline_accepts_focus_file_positional(tmp_path):
+    """Positional focus_file parameter works."""
     config = load_config()
     src = tmp_path / "lib.rs"
     src.write_text("fn main() {}")
     p = EvaluationPipeline(config, tmp_path, src)
     assert p.focus_file == src
-    assert p.source_file == src  # backward compat property
 
 
 def test_pipeline_accepts_focus_file_kwarg(tmp_path):
-    """New focus_file keyword argument works."""
+    """focus_file keyword argument works."""
     config = load_config()
     src = tmp_path / "lib.rs"
     src.write_text("fn main() {}")
     p = EvaluationPipeline(config, tmp_path, focus_file=src)
     assert p.focus_file == src
-    assert p.source_file == src
 
 
-def test_pipeline_focus_file_overrides_source_file(tmp_path):
-    """When both are provided, focus_file takes precedence."""
+def test_pipeline_requires_focus_file(tmp_path):
+    """Omitting focus_file raises ValueError."""
     config = load_config()
-    src1 = tmp_path / "old.rs"
-    src1.write_text("fn main() {}")
-    src2 = tmp_path / "new.rs"
-    src2.write_text("fn main() {}")
-    p = EvaluationPipeline(config, tmp_path, src1, focus_file=src2)
-    assert p.focus_file == src2
-
-
-def test_pipeline_requires_at_least_one_file(tmp_path):
-    """Omitting both source_file and focus_file raises ValueError."""
-    config = load_config()
-    with pytest.raises(ValueError, match="Either source_file or focus_file"):
+    with pytest.raises(ValueError, match="focus_file must be provided"):
         EvaluationPipeline(config, tmp_path)
-
-
-def test_pipeline_all_source_files_default(tmp_path):
-    """all_source_files defaults to [focus_file] when not provided."""
-    config = load_config()
-    src = tmp_path / "lib.rs"
-    src.write_text("fn main() {}")
-    p = EvaluationPipeline(config, tmp_path, src)
-    assert p.all_source_files == [src]
-
-
-def test_pipeline_all_source_files_explicit(tmp_path):
-    """all_source_files can be explicitly provided."""
-    config = load_config()
-    src = tmp_path / "lib.rs"
-    src.write_text("fn main() {}")
-    other = tmp_path / "other.rs"
-    other.write_text("fn other() {}")
-    p = EvaluationPipeline(
-        config, tmp_path, focus_file=src, all_source_files=[src, other],
-    )
-    assert len(p.all_source_files) == 2
-
-
-def test_source_file_property_setter(tmp_path):
-    """source_file setter updates focus_file."""
-    config = load_config()
-    src = tmp_path / "lib.rs"
-    src.write_text("fn main() {}")
-    p = EvaluationPipeline(config, tmp_path, src)
-    new_src = tmp_path / "new.rs"
-    new_src.write_text("fn new() {}")
-    p.source_file = new_src
-    assert p.focus_file == new_src
 
 
 # ---------------------------------------------------------------------------

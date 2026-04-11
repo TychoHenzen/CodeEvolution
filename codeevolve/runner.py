@@ -8,12 +8,9 @@ import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
-from urllib.request import urlopen
 
 if TYPE_CHECKING:
     from codeevolve.scheduler import ScheduleSlot
-    from openevolve.api import EvolutionResult
-from urllib.error import URLError
 
 logger = logging.getLogger(__name__)
 
@@ -59,28 +56,6 @@ import yaml
 from codeevolve.config import CodeEvolveConfig, load_config
 
 
-def validate_server(config: CodeEvolveConfig) -> list[str]:
-    """Check that the LLM backend is reachable."""
-    if config.provider == "codex":
-        port = config.codex.proxy_port
-        label = "codex proxy"
-    else:
-        port = config.llama_server.port
-        label = "llama-server"
-
-    url = f"http://localhost:{port}/health"
-    errors = []
-    try:
-        resp = urlopen(url, timeout=10)
-        if resp.status != 200:
-            errors.append(
-                f"{label} health check failed (HTTP {resp.status}) on port {port}"
-            )
-    except (URLError, OSError) as e:
-        errors.append(f"Cannot connect to {label} on port {port}: {e}")
-    return errors
-
-
 def build_openevolve_config_yaml(
     config: CodeEvolveConfig, output_dir: Path, frozen_context: str = "",
 ) -> Path:
@@ -90,83 +65,6 @@ def build_openevolve_config_yaml(
     with open(yaml_path, "w") as f:
         yaml.dump(oe_dict, f, default_flow_style=False, sort_keys=False)
     return yaml_path
-
-
-def format_iteration_line(
-    iteration: int,
-    total: int,
-    file_changed: str = "",
-    diff_lines: int = 0,
-    build_ok: bool = False,
-    build_time: float = 0.0,
-    tests_ok: bool = False,
-    tests_passed: int = 0,
-    tests_failed: int = 0,
-    clippy_warnings: int = 0,
-    parent_clippy_warnings: Optional[int] = None,
-    binary_size: int = 0,
-    parent_binary_size: Optional[int] = None,
-    loc: int = 0,
-    parent_loc: Optional[int] = None,
-    llm_ran: bool = False,
-    llm_score: float = 0.0,
-    score: float = 0.0,
-    best_score: float = 0.0,
-    error: str = "",
-) -> str:
-    """Format a single iteration's results for terminal display."""
-    lines = []
-    lines.append(f"-- Iteration {iteration}/{total} " + "-" * 40)
-    lines.append(f"  Mutating {file_changed} ... generated {diff_lines}-line diff")
-
-    if not build_ok:
-        error_short = error.split("\n")[0][:80] if error else "compilation error"
-        lines.append(f"  |- Build:    FAILED ({error_short})")
-        lines.append(f"  '- Score:    0.00 (discarded)")
-        return "\n".join(lines)
-
-    lines.append(f"  |- Build:    pass, compiled ({build_time:.1f}s)")
-
-    if not tests_ok:
-        lines.append(f"  |- Tests:    FAILED ({tests_passed} passed, {tests_failed} failed)")
-        lines.append(f"  '- Score:    0.00 (discarded)")
-        return "\n".join(lines)
-
-    lines.append(f"  |- Tests:    pass, {tests_passed}/{tests_passed + tests_failed} passed")
-
-    clippy_delta = ""
-    if parent_clippy_warnings is not None:
-        if clippy_warnings < parent_clippy_warnings:
-            clippy_delta = f" (was {parent_clippy_warnings}) - improved"
-        elif clippy_warnings > parent_clippy_warnings:
-            clippy_delta = f" (was {parent_clippy_warnings}) - regressed"
-    lines.append(f"  |- Clippy:   {clippy_warnings} warnings{clippy_delta}")
-
-    size_mb = binary_size / 1_000_000
-    size_delta = ""
-    if parent_binary_size is not None:
-        parent_mb = parent_binary_size / 1_000_000
-        if binary_size < parent_binary_size:
-            size_delta = f" (was {parent_mb:.1f} MB) - improved"
-        elif binary_size > parent_binary_size:
-            size_delta = f" (was {parent_mb:.1f} MB) - regressed"
-    lines.append(f"  |- Size:     {size_mb:.1f} MB{size_delta}")
-
-    loc_delta = ""
-    if parent_loc is not None:
-        if loc < parent_loc:
-            loc_delta = f" (was {parent_loc}) - improved"
-        elif loc > parent_loc:
-            loc_delta = f" (was {parent_loc}) - regressed"
-    lines.append(f"  |- LoC:      {loc}{loc_delta}")
-
-    if llm_ran:
-        lines.append(f"  |- LLM:      {llm_score:.2f}")
-    else:
-        lines.append(f"  |- LLM:      skipped (not top quartile)")
-
-    lines.append(f"  '- Score:    {score:.2f} (best so far: {best_score:.2f})")
-    return "\n".join(lines)
 
 
 def _patch_logging_utf8() -> None:
@@ -229,6 +127,20 @@ def _patch_extract_diffs() -> None:
     code_utils.extract_diffs = _patched
 
 
+_patches_applied = False
+
+
+def _apply_patches() -> None:
+    """Apply all OpenEvolve monkey patches once."""
+    global _patches_applied
+    if _patches_applied:
+        return
+    _patch_extract_diffs()
+    _patch_feature_dimension_defaults()
+    _patch_logging_utf8()
+    _patches_applied = True
+
+
 def find_latest_checkpoint(output_dir: Path) -> str | None:
     """Return the path to the latest valid checkpoint directory, or None.
 
@@ -267,7 +179,7 @@ def find_latest_checkpoint(output_dir: Path) -> str | None:
 def run_evolution(
     config_path: Path,
     project_path: Path,
-    source_files: Path | list[Path],
+    source_files: list[Path],
     evaluator_path: Path,
     checkpoint_path: str | None = None,
 ):
@@ -276,40 +188,30 @@ def run_evolution(
     Args:
         config_path: Path to evolution.yaml.
         project_path: Root of the Rust project.
-        source_files: A single Path (legacy) or list of Paths with EVOLVE-BLOCK
-            markers. When a single file is given, the existing single-file flow
-            is used for backward compatibility. When multiple files are given,
-            summaries are generated and a bundle is created with the first file
-            as focus.
+        source_files: List of Paths with EVOLVE-BLOCK markers. When a single
+            file is given, the single-file flow is used. When multiple files
+            are given, summaries are generated and a bundle is created.
         evaluator_path: Path to the generated evaluator.py.
         checkpoint_path: Optional path to a checkpoint directory to resume from.
     """
     from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
 
-    _patch_extract_diffs()
-    _patch_feature_dimension_defaults()
-    _patch_logging_utf8()
+    _apply_patches()
 
     config = load_config(config_path)
 
     output_dir = project_path / ".codeevolve" / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Normalize to list
-    if isinstance(source_files, Path):
-        source_files = [source_files]
-
-    # ---- Single-file backward-compatible path ----
     if len(source_files) == 1:
         return _run_single_file(
-            config, config_path, project_path, source_files[0],
+            config, project_path, source_files[0],
             evaluator_path, output_dir,
             checkpoint_path=checkpoint_path,
         )
 
-    # ---- Multi-file bundle path ----
     return _run_multi_file(
-        config, config_path, project_path, source_files,
+        config, project_path, source_files,
         evaluator_path, output_dir,
         checkpoint_path=checkpoint_path,
     )
@@ -317,24 +219,31 @@ def run_evolution(
 
 def _run_single_file(
     config: CodeEvolveConfig,
-    config_path: Path,
     project_path: Path,
     initial_program: Path,
     evaluator_path: Path,
     output_dir: Path,
     checkpoint_path: str | None = None,
+    owns_backup: bool = True,
 ):
-    """Single-file evolution flow (backward compatible)."""
+    """Single-file evolution flow.
+
+    Args:
+        owns_backup: If True (default), back up and restore the source file.
+            Set to False when the caller (e.g. run_evolution_with_rotation)
+            manages backups externally.
+    """
     from openevolve.controller import OpenEvolve
     from openevolve.config import load_config as oe_load_config
     from openevolve.api import EvolutionResult
     from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
 
-    # Save a backup of the original source before evolution starts.
-    backup_path = output_dir / f"{initial_program.name}.backup"
     original_code = initial_program.read_text(encoding="utf-8")
-    backup_path.write_text(original_code, encoding="utf-8")
-    logger.info("Saved source backup to %s", backup_path)
+    backup_path = None
+    if owns_backup:
+        backup_path = output_dir / f"{initial_program.name}.backup"
+        backup_path.write_text(original_code, encoding="utf-8")
+        logger.info("Saved source backup to %s", backup_path)
 
     # Give OpenEvolve only the EVOLVE-BLOCK content so the LLM cannot
     # duplicate struct definitions, imports, or test modules that live
@@ -414,10 +323,9 @@ def _run_single_file(
             output_dir=str(output_dir),
         )
     finally:
-        # Restore the original source file so the project is never left
-        # with a candidate's code after the run ends (success or crash).
-        initial_program.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
-        logger.info("Restored original source from backup")
+        if owns_backup and backup_path is not None:
+            initial_program.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
+            logger.info("Restored original source from backup")
 
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
@@ -429,7 +337,6 @@ def _run_single_file(
 
 def _run_multi_file(
     config: CodeEvolveConfig,
-    config_path: Path,
     project_path: Path,
     source_files: list[Path],
     evaluator_path: Path,
@@ -580,10 +487,7 @@ def run_evolution_with_rotation(
     """
     from openevolve.api import EvolutionResult
 
-    # Apply monkey patches once at the start
-    _patch_extract_diffs()
-    _patch_feature_dimension_defaults()
-    _patch_logging_utf8()
+    _apply_patches()
 
     config = load_config(config_path)
 
@@ -648,15 +552,14 @@ def run_evolution_with_rotation(
             slot_config = copy.deepcopy(config)
             slot_config.evolution.max_iterations = slot_iterations
 
-            # Call _run_single_file for this slot
             result = _run_single_file(
                 slot_config,
-                config_path,
                 project_path,
                 source_file,
                 evaluator_path,
                 slot_output_dir,
                 checkpoint_path=None,  # each slot is a fresh OE run
+                owns_backup=False,  # rotation manages backups externally
             )
 
             results[slot.file_path] = result

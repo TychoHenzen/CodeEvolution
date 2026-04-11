@@ -12,7 +12,7 @@ See `Reference.md` for the design rationale and `docs/superpowers/specs/2026-04-
 
 - Python 3.13, Click (CLI), OpenEvolve (evolutionary engine), Jinja2 (templates), PyYAML, openai (LLM client)
 - Three LLM backends (`provider` setting in config): `local` (llama-server/llama.cpp subprocess), `codex` (OpenAI Codex CLI via `codex_proxy.py`), `claude` (Claude Code CLI via `claude_proxy.py`)
-- Codex/Claude proxies are lightweight HTTP servers that translate OpenAI API calls to CLI invocations
+- Codex/Claude proxies are lightweight HTTP servers that translate OpenAI API calls to CLI invocations, sharing `base_proxy.py` for handler and lifecycle code
 - Default provider is `codex` (gpt-5.4-mini)
 
 ## Commands

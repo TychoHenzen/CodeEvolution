@@ -180,8 +180,8 @@ class TestEndToEndRotationWithLedger:
                 config_path, rust_project, schedule, source_files, evaluator_path,
             )
 
-        # positional arg index 3 is initial_program (source_file)
-        call_sources = [call[0][3] for call in mock_rsf.call_args_list]
+        # positional arg index 2 is initial_program (source_file)
+        call_sources = [call[0][2] for call in mock_rsf.call_args_list]
         assert call_sources[0] == rust_project / "src/lib.rs"
         assert call_sources[1] == rust_project / "src/utils.rs"
         assert call_sources[2] == rust_project / "src/engine.rs"
@@ -258,7 +258,7 @@ class TestCheckpointResumeRoundTrip:
         assert mock_rsf.call_count == 2
 
         # The first executed slot should be src/utils.rs (slot index 1)
-        first_executed_source = mock_rsf.call_args_list[0][0][3]
+        first_executed_source = mock_rsf.call_args_list[0][0][2]
         assert first_executed_source == rust_project / "src/utils.rs"
 
     def test_resume_does_not_rerun_completed_slot(self, rust_project: Path):

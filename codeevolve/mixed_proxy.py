@@ -15,6 +15,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 from urllib.request import urlopen, Request
 
+from codeevolve.base_proxy import BaseProxyHandler
 from codeevolve.codex_proxy import CodexProxy
 from codeevolve.claude_proxy import ClaudeProxy
 
@@ -23,17 +24,14 @@ logger = logging.getLogger(__name__)
 MIXED_PROXY_PORT = 8083
 
 
-class _RouterHandler(BaseHTTPRequestHandler):
+class _RouterHandler(BaseProxyHandler):
     """Routes requests to codex or claude proxy based on model name."""
 
-    # Set by MixedProxy before server starts.
+    proxy_name = "mixed-proxy"
     codex_port: int = 8081
     claude_port: int = 8082
     codex_model: str = "gpt-5.4-mini"
     claude_model: str = "haiku"
-
-    def log_message(self, format, *args):
-        logger.debug("mixed-proxy: %s", format % args)
 
     def do_POST(self):
         if "/chat/completions" not in self.path:
@@ -45,7 +43,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
         body = json.loads(raw_body)
 
         model = body.get("model", "")
-        if self.claude_model in model:
+        if model == self.claude_model:
             port = self.claude_port
             backend = "claude"
         else:
@@ -66,7 +64,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
             self.wfile.write(resp_body)
         except Exception as e:
             logger.error("mixed-proxy: backend %s failed: %s", backend, e)
-            error_resp = json.dumps({
+            self._respond_json({
                 "id": "mixed-proxy-error",
                 "object": "chat.completion",
                 "model": model,
@@ -75,12 +73,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
                     "message": {"role": "assistant", "content": ""},
                     "finish_reason": "error",
                 }],
-            }).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(error_resp)))
-            self.end_headers()
-            self.wfile.write(error_resp)
+            })
 
     def do_GET(self):
         if self.path in ("/health", "/v1/health"):
@@ -95,13 +88,9 @@ class _RouterHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
-    def _respond_json(self, data: dict):
-        payload = json.dumps(data).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+    def _invoke_cli(self, prompt: str) -> str:
+        # Router never invokes CLI directly — it proxies to sub-proxies
+        raise NotImplementedError
 
 
 class MixedProxy:
@@ -110,8 +99,6 @@ class MixedProxy:
     def __init__(self, codex_config, claude_config):
         self._codex = CodexProxy(codex_config)
         self._claude = ClaudeProxy(claude_config)
-        self._codex_config = codex_config
-        self._claude_config = claude_config
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -123,10 +110,10 @@ class MixedProxy:
         self._codex.start()
         self._claude.start()
 
-        _RouterHandler.codex_port = self._codex_config.proxy_port
-        _RouterHandler.claude_port = self._claude_config.proxy_port
-        _RouterHandler.codex_model = self._codex_config.model
-        _RouterHandler.claude_model = self._claude_config.model
+        _RouterHandler.codex_port = self._codex._config.proxy_port
+        _RouterHandler.claude_port = self._claude._config.proxy_port
+        _RouterHandler.codex_model = self._codex._config.model
+        _RouterHandler.claude_model = self._claude._config.model
 
         self._server = HTTPServer(("127.0.0.1", MIXED_PROXY_PORT), _RouterHandler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -134,8 +121,8 @@ class MixedProxy:
         logger.info(
             "Mixed proxy started on port %d (codex=%s@%d, claude=%s@%d)",
             MIXED_PROXY_PORT,
-            self._codex_config.model, self._codex_config.proxy_port,
-            self._claude_config.model, self._claude_config.proxy_port,
+            self._codex._config.model, self._codex._config.proxy_port,
+            self._claude._config.model, self._claude._config.proxy_port,
         )
 
     def stop(self) -> None:

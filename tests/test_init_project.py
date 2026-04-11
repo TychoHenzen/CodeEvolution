@@ -5,7 +5,6 @@ import yaml
 
 from codeevolve.init_project import (
     find_cargo_toml,
-    scan_rs_files,
     insert_evolve_markers,
     generate_codeevolve_dir,
 )
@@ -27,24 +26,6 @@ def test_find_cargo_toml_workspace_accepted(tmp_path: Path):
     cargo.write_text('[workspace]\nmembers = ["crate_a"]')
     result = find_cargo_toml(tmp_path)
     assert result == cargo
-
-
-def test_scan_rs_files(sample_crate: Path):
-    files = scan_rs_files(sample_crate)
-    assert len(files) == 1
-    assert files[0].name == "lib.rs"
-
-
-def test_scan_rs_files_nested(tmp_path: Path):
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "main.rs").write_text("fn main() {}")
-    (src / "utils.rs").write_text("pub fn foo() {}")
-    sub = src / "sub"
-    sub.mkdir()
-    (sub / "mod.rs").write_text("pub mod inner;")
-    files = scan_rs_files(tmp_path)
-    assert len(files) == 3
 
 
 def test_insert_evolve_markers_wraps_whole_file(tmp_path: Path):

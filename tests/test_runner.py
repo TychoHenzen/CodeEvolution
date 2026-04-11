@@ -1,40 +1,16 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from typing import Optional
 
 import pytest
 
 from codeevolve.config import load_config
 from codeevolve.runner import (
-    validate_server,
     build_openevolve_config_yaml,
-    format_iteration_line,
     _normalize_llm_diffs,
     _run_multi_file,
     _run_single_file,
     find_latest_checkpoint,
 )
-
-
-@patch("codeevolve.runner.urlopen")
-def test_validate_server_success(mock_urlopen):
-    mock_resp = MagicMock()
-    mock_resp.status = 200
-    mock_resp.read.return_value = b'{"status":"ok"}'
-    mock_urlopen.return_value = mock_resp
-    config = load_config()
-    errors = validate_server(config)
-    assert errors == []
-
-
-@patch("codeevolve.runner.urlopen")
-def test_validate_server_unreachable(mock_urlopen):
-    from urllib.error import URLError
-    mock_urlopen.side_effect = URLError("Connection refused")
-    config = load_config()
-    errors = validate_server(config)
-    assert len(errors) == 1
-    assert "Cannot connect" in errors[0]
 
 
 def test_build_openevolve_config_yaml(tmp_path: Path):
@@ -43,44 +19,6 @@ def test_build_openevolve_config_yaml(tmp_path: Path):
     assert yaml_path.exists()
     content = yaml_path.read_text()
     assert "api_base" in content
-
-
-def test_format_iteration_line_success():
-    line = format_iteration_line(
-        iteration=12,
-        total=500,
-        file_changed="src/lib.rs",
-        diff_lines=47,
-        build_ok=True,
-        build_time=1.2,
-        tests_ok=True,
-        tests_passed=23,
-        tests_failed=0,
-        clippy_warnings=3,
-        parent_clippy_warnings=7,
-        binary_size=1_400_000,
-        parent_binary_size=1_500_000,
-        llm_ran=False,
-        score=0.72,
-        best_score=0.81,
-    )
-    assert "12/500" in line
-    assert "src/lib.rs" in line
-    assert "improved" in line.lower() or "3 warnings" in line
-
-
-def test_format_iteration_line_build_failure():
-    line = format_iteration_line(
-        iteration=13,
-        total=500,
-        file_changed="src/utils.rs",
-        diff_lines=12,
-        build_ok=False,
-        build_time=0.5,
-        error="error[E0308]: mismatched types",
-    )
-    assert "FAILED" in line
-    assert "0.00" in line
 
 
 class TestNormalizeLlmDiffs:
@@ -256,7 +194,7 @@ def test_run_multi_file_uses_workspace_bundle(sample_workspace, tmp_path):
 
         # This should detect workspace and use create_workspace_bundle
         _run_multi_file(
-            config, config_path, sample_workspace, marked,
+            config, sample_workspace, marked,
             eval_file, output_dir,
         )
         mock_ws_bundle.assert_called_once()
@@ -283,19 +221,15 @@ class TestFinalCheckpointSave:
 
     def test_single_file_saves_final_checkpoint(self, sample_crate, tmp_path):
         """_run_single_file calls _save_checkpoint after controller.run returns."""
-        import asyncio
-
         config = load_config()
-        config_path = sample_crate / ".codeevolve" / "evolution.yaml"
+        codeevolve_dir = sample_crate / ".codeevolve"
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
-        # Find a marked source file from the sample crate
         src_file = sample_crate / "src" / "lib.rs"
 
-        # Create a mock evaluator file
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        eval_file = config_path.parent / "evaluator.py"
+        codeevolve_dir.mkdir(parents=True, exist_ok=True)
+        eval_file = codeevolve_dir / "evaluator.py"
         eval_file.write_text("def evaluate(path): return {}", encoding="utf-8")
 
         mock_program = MagicMock()
@@ -306,7 +240,7 @@ class TestFinalCheckpointSave:
 
         with patch("openevolve.controller.OpenEvolve", return_value=mock_controller):
             _run_single_file(
-                config, config_path, sample_crate, src_file,
+                config, sample_crate, src_file,
                 eval_file, output_dir,
             )
 
@@ -315,15 +249,15 @@ class TestFinalCheckpointSave:
     def test_multi_file_saves_final_checkpoint(self, sample_workspace, tmp_path):
         """_run_multi_file calls _save_checkpoint after controller.run returns."""
         config = load_config()
-        config_path = sample_workspace / ".codeevolve" / "evolution.yaml"
+        codeevolve_dir = sample_workspace / ".codeevolve"
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
         source_files = sorted((sample_workspace / "crates").rglob("*.rs"))
         marked = [f for f in source_files if "EVOLVE-BLOCK-START" in f.read_text()]
 
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        eval_file = config_path.parent / "evaluator.py"
+        codeevolve_dir.mkdir(parents=True, exist_ok=True)
+        eval_file = codeevolve_dir / "evaluator.py"
         eval_file.write_text("def evaluate(path): return {}", encoding="utf-8")
 
         mock_program = MagicMock()
@@ -336,7 +270,7 @@ class TestFinalCheckpointSave:
              patch("codeevolve.bundler.create_workspace_bundle", return_value="// bundle"), \
              patch("codeevolve.summary.summarize_files", return_value={}):
             _run_multi_file(
-                config, config_path, sample_workspace, marked,
+                config, sample_workspace, marked,
                 eval_file, output_dir,
             )
 
@@ -344,18 +278,16 @@ class TestFinalCheckpointSave:
 
     def test_final_checkpoint_not_called_when_attribute_missing(self, sample_workspace, tmp_path):
         """If controller lacks _save_checkpoint, no error is raised."""
-        import asyncio
-
         config = load_config()
-        config_path = sample_workspace / ".codeevolve" / "evolution.yaml"
+        codeevolve_dir = sample_workspace / ".codeevolve"
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
         source_files = sorted((sample_workspace / "crates").rglob("*.rs"))
         marked = [f for f in source_files if "EVOLVE-BLOCK-START" in f.read_text()]
 
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        eval_file = config_path.parent / "evaluator.py"
+        codeevolve_dir.mkdir(parents=True, exist_ok=True)
+        eval_file = codeevolve_dir / "evaluator.py"
         eval_file.write_text("def evaluate(path): return {}", encoding="utf-8")
 
         mock_program = MagicMock()
@@ -365,15 +297,13 @@ class TestFinalCheckpointSave:
         async def _fake_run(**kwargs):
             return mock_program
 
-        # Controller without _save_checkpoint or database attributes
-        mock_controller = MagicMock(spec=[])  # empty spec => no attributes
+        mock_controller = MagicMock(spec=[])
         mock_controller.run = _fake_run
 
         with patch("openevolve.controller.OpenEvolve", return_value=mock_controller), \
              patch("codeevolve.bundler.create_workspace_bundle", return_value="// bundle"), \
              patch("codeevolve.summary.summarize_files", return_value={}):
-            # Should complete without raising AttributeError
             _run_multi_file(
-                config, config_path, sample_workspace, marked,
+                config, sample_workspace, marked,
                 eval_file, output_dir,
             )

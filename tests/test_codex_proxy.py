@@ -3,31 +3,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from codeevolve.codex_proxy import _parse_codex_output, CodexProxy, _ProxyHandler
+from codeevolve.codex_proxy import CodexProxy, _ProxyHandler
 from codeevolve.config import CodexConfig
-
-
-class TestParseCodexOutput:
-    """Tests for extracting LLM responses from codex exec output.
-
-    When piped, codex sends only the response to stdout and all
-    metadata/chrome to stderr.
-    """
-
-    def test_clean_stdout(self):
-        assert _parse_codex_output("Hello, world!\n", "") == "Hello, world!"
-
-    def test_multiline_response(self):
-        stdout = "```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n"
-        result = _parse_codex_output(stdout, "")
-        assert "fn main()" in result
-        assert "println!" in result
-
-    def test_empty_output(self):
-        assert _parse_codex_output("", "") == ""
-
-    def test_strips_whitespace(self):
-        assert _parse_codex_output("  answer  \n\n", "") == "answer"
 
 
 class TestBuildPrompt:

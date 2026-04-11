@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from codeevolve.summary import summarize_rs_file, summarize_files, content_hash
+from codeevolve.summary import summarize_rs_file, summarize_files
 
 
 # ---------------------------------------------------------------------------
@@ -330,27 +330,3 @@ class TestSummarizeFiles:
         f = _write(tmp_path, "crates/foo/src/lib.rs", "pub fn foo() {}\n")
         result = summarize_files([f], project_path=tmp_path)
         assert "crates/foo/src/lib.rs" in result[f]
-
-
-# ---------------------------------------------------------------------------
-# content_hash
-# ---------------------------------------------------------------------------
-
-class TestContentHash:
-    def test_deterministic(self):
-        text = "pub fn foo() {}"
-        assert content_hash(text) == content_hash(text)
-
-    def test_different_content_different_hash(self):
-        assert content_hash("pub fn foo() {}") != content_hash("pub fn bar() {}")
-
-    def test_empty_string(self):
-        h = content_hash("")
-        assert isinstance(h, str)
-        assert len(h) == 64  # SHA-256 hex digest
-
-    def test_returns_str(self):
-        assert isinstance(content_hash("hello"), str)
-
-    def test_hash_length(self):
-        assert len(content_hash("some content")) == 64
