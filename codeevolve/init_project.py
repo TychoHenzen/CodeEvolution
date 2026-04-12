@@ -46,6 +46,50 @@ def insert_evolve_markers(rs_file: Path) -> None:
     rs_file.write_text(wrapped, encoding="utf-8")
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base, returning a new dict."""
+    merged = base.copy()
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _single_quote_backslash_strings(data):
+    """Wrap strings containing backslashes in _SingleQuotedStr for clean YAML output."""
+    if isinstance(data, dict):
+        return {k: _single_quote_backslash_strings(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_single_quote_backslash_strings(v) for v in data]
+    if isinstance(data, str) and "\\" in data:
+        return _SingleQuotedStr(data)
+    return data
+
+
+def sync_project_config(config_path: Path) -> list[str]:
+    """Merge latest defaults into an existing project config.
+
+    New keys from defaults are added; existing project values are preserved.
+    Returns a list of top-level keys that were added.
+    """
+    with open(_DEFAULTS_DIR / "evolution.yaml") as f:
+        defaults = yaml.safe_load(f)
+    with open(config_path, encoding="utf-8") as f:
+        project = yaml.safe_load(f) or {}
+
+    added_keys = [k for k in defaults if k not in project]
+
+    merged = _deep_merge(defaults, project)
+    merged = _single_quote_backslash_strings(merged)
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(merged, f, Dumper=_ConfigDumper, default_flow_style=False,
+                  sort_keys=False, allow_unicode=True)
+
+    return added_keys
+
+
 def regenerate_evaluator(
     project_path: Path,
     config_path: Path,
@@ -83,7 +127,7 @@ def generate_codeevolve_dir(
     codeevolve_dir.mkdir(exist_ok=True)
 
     # --- Generate evolution.yaml ---
-    with open(_DEFAULTS_DIR / "evolution.yaml") as f:
+    with open(_DEFAULTS_DIR / "evolution.yaml", encoding="utf-8") as f:
         config_data = yaml.safe_load(f)
 
     if custom_benchmark:
@@ -100,8 +144,9 @@ def generate_codeevolve_dir(
         config_data["exclude_globs"] = exclude_globs
 
     config_path = codeevolve_dir / "evolution.yaml"
-    with open(config_path, "w") as f:
-        yaml.dump(config_data, f, Dumper=_ConfigDumper, default_flow_style=False, sort_keys=False)
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(config_data, f, Dumper=_ConfigDumper, default_flow_style=False,
+                  sort_keys=False, allow_unicode=True)
 
     # --- Generate evaluator.py ---
     regenerate_evaluator(project_path, config_path, focus_file=rs_files[0])

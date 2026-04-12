@@ -35,14 +35,15 @@ class BaseProxyHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(content_length))
 
         messages = body.get("messages", [])
+        request_model = body.get("model", "") or self.model
         prompt = self._build_prompt(messages)
 
-        response_text = self._invoke_cli(prompt)
+        response_text = self._invoke_cli(prompt, model=request_model)
 
         openai_response = {
             "id": f"{self.proxy_name}-0",
             "object": "chat.completion",
-            "model": self.model,
+            "model": request_model,
             "choices": [{
                 "index": 0,
                 "message": {"role": "assistant", "content": response_text},
@@ -57,7 +58,7 @@ class BaseProxyHandler(BaseHTTPRequestHandler):
 
         self._respond_json(openai_response)
 
-    def _invoke_cli(self, prompt: str) -> str:
+    def _invoke_cli(self, prompt: str, model: str = "") -> str:
         """Execute the CLI tool with the given prompt. Override in subclasses."""
         raise NotImplementedError
 

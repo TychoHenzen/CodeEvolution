@@ -316,6 +316,19 @@ class EvaluationPipeline:
         )
         return context
 
+    def _fix_tier(self, attempt_number: int, max_fix_attempts: int) -> str:
+        """Determine the model tier for a fixer attempt.
+
+        Attempt 0 (first fix): low tier (cheap/fast default model).
+        Middle attempts:        mid tier (sonnet / gpt-5.3-codex).
+        Last attempt:           high tier (opus / gpt-5.4).
+        """
+        if attempt_number == 0:
+            return "low"
+        if attempt_number >= max_fix_attempts - 1 and max_fix_attempts > 1:
+            return "high"
+        return "mid"
+
     def _try_llm_fix(
         self,
         error_type: str,
@@ -328,7 +341,9 @@ class EvaluationPipeline:
         """Ask the LLM to fix the current code. Returns True if a fix was applied.
 
         Only sends the EVOLVE-BLOCK content to the LLM, then splices the
-        fix back into the original file structure.
+        fix back into the original file structure.  Uses escalating model
+        tiers: low for the first attempt, mid for middle attempts, high
+        for the last attempt.
         """
         current_code = self.focus_file.read_text(encoding="utf-8")
 
@@ -339,9 +354,13 @@ class EvaluationPipeline:
         else:
             code_to_fix = current_code
 
+        tier = self._fix_tier(attempt_number, cfg.evolution.max_fix_attempts)
+        model = cfg.tier_model(tier)
+        logger.info("LLM fixer attempt %d: tier=%s, model=%s", attempt_number + 1, tier, model)
+
         fixed = attempt_fix(
             code_to_fix, error_type, error_output,
-            cfg.api_base, cfg.model_name,
+            cfg.api_base, model,
             previous_attempts=previous_attempts or [],
             attempt_number=attempt_number,
             test_context=test_context if test_context is not None else self._get_test_context(),
@@ -770,10 +789,12 @@ class EvaluationPipeline:
             not cfg.llm_judgment.top_quartile_only or top_q
         ):
             code = self.focus_file.read_text(encoding="utf-8")
+            judge_model = cfg.tier_model("mid")
+            logger.info("Layer 4: using mid-tier model %s for judgment", judge_model)
             judgment = judge_code(
                 code=code,
                 api_base=cfg.api_base,
-                model=cfg.model_name,
+                model=judge_model,
                 dimensions=cfg.llm_judgment.dimensions,
                 num_runs=cfg.llm_judgment.num_runs,
             )

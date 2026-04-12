@@ -58,12 +58,13 @@ class _ProxyHandler(BaseProxyHandler):
     effort: str = "low"
     timeout: int = 300
 
-    def _invoke_cli(self, prompt: str) -> str:
-        logger.info("claude-proxy: calling claude -p (%d-char prompt)", len(prompt))
+    def _invoke_cli(self, prompt: str, model: str = "") -> str:
+        use_model = model or self.model
+        logger.info("claude-proxy: calling claude -p (%d-char prompt, model=%s)", len(prompt), use_model)
         try:
             result = subprocess.run(
                 [*self.claude_cmd,
-                 "--model", self.model,
+                 "--model", use_model,
                  "--no-session-persistence",
                  "--effort", self.effort,
                  "-p",

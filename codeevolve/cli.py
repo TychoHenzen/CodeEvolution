@@ -28,6 +28,7 @@ from codeevolve.init_project import (
     generate_codeevolve_dir,
     insert_evolve_markers,
     regenerate_evaluator,
+    sync_project_config,
 )
 from codeevolve.runner import run_evolution, run_evolution_with_rotation, find_latest_checkpoint
 from codeevolve.llama_server import LlamaServer
@@ -141,6 +142,13 @@ def reinit(path: Path):
         click.echo("Error: .codeevolve/evolution.yaml not found. Run 'codeevolve init' first.", err=True)
         sys.exit(1)
 
+    # Sync config with latest defaults (adds new sections, preserves user values)
+    added_keys = sync_project_config(config_path)
+    if added_keys:
+        click.echo(f"  Config synced: added new sections: {', '.join(added_keys)}")
+    else:
+        click.echo("  Config up to date (no new sections)")
+
     config = load_config(config_path)
     rs_files = discover_rs_files(path, config.include_globs, config.exclude_globs)
     marked_files = [f for f in rs_files if "EVOLVE-BLOCK-START" in f.read_text(encoding="utf-8")]
@@ -216,7 +224,7 @@ def run(config_path: Path, fresh: bool):
     elif config.provider == "mixed":
         click.echo(f"  Starting mixed proxy (codex: {config.codex.model}, claude: {config.claude.model})...")
         try:
-            backend = MixedProxy(config.codex, config.claude)
+            backend = MixedProxy(config.codex, config.claude, config.tiers)
             backend.start()
         except Exception as e:
             click.echo(f"Error starting mixed proxy: {e}", err=True)

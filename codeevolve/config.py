@@ -100,6 +100,23 @@ class LlmJudgmentConfig:
 
 
 @dataclass
+class ModelTiers:
+    """Model escalation tiers for evaluator tasks.
+
+    Low tier uses the provider's default model (codex.model / claude.model).
+    Mid and high tiers upgrade for higher-stakes calls.
+
+    Low:  generation + fixer attempt 1
+    Mid:  LLM judging + fixer attempts 2..N-1
+    High: fixer last attempt
+    """
+    mid_codex: str = "gpt-5.3-codex"
+    mid_claude: str = "sonnet"
+    high_codex: str = "gpt-5.4"
+    high_claude: str = "opus"
+
+
+@dataclass
 class CodexConfig:
     cli_path: str = "codex"
     model: str = "gpt-5.4-mini"
@@ -127,6 +144,7 @@ class CodeEvolveConfig:
     fitness: FitnessConfig = field(default_factory=FitnessConfig)
     benchmarks: BenchmarksConfig = field(default_factory=BenchmarksConfig)
     llm_judgment: LlmJudgmentConfig = field(default_factory=LlmJudgmentConfig)
+    tiers: ModelTiers = field(default_factory=ModelTiers)
     include_globs: list[str] = field(default_factory=lambda: ["src/**/*.rs"])
     exclude_globs: list[str] = field(default_factory=list)
 
@@ -150,6 +168,26 @@ class CodeEvolveConfig:
         if self.provider == "mixed":
             return self.codex.model  # primary; both listed in to_openevolve_dict
         return self.llama_server.model_name
+
+    def tier_model(self, tier: str) -> str:
+        """Resolve model name for a quality tier ('low', 'mid', 'high').
+
+        Low tier returns the provider's default model.  Mid/high return
+        escalated models from the same provider family so the running
+        proxy can handle them.  For mixed mode, mid/high use claude
+        models (the router forwards based on model name).
+        """
+        if tier == "low":
+            return self.model_name
+        t = self.tiers
+        if self.provider == "codex":
+            return t.mid_codex if tier == "mid" else t.high_codex
+        if self.provider == "claude":
+            return t.mid_claude if tier == "mid" else t.high_claude
+        if self.provider == "mixed":
+            return t.mid_claude if tier == "mid" else t.high_claude
+        # local provider: no tier escalation
+        return self.model_name
 
     def to_openevolve_dict(self, frozen_context: str = "") -> dict:
         """Convert to a dict compatible with OpenEvolve's Config.from_dict().
@@ -313,6 +351,7 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
             del benchmarks_data[_list_key]
     benchmarks = BenchmarksConfig(**benchmarks_data)
     llm_judgment = LlmJudgmentConfig(**data.get("llm_judgment", {}))
+    tiers = ModelTiers(**data.get("tiers", {}))
     include_globs = data.get("include_globs") or ["src/**/*.rs"]
     exclude_globs = data.get("exclude_globs") or []
     return CodeEvolveConfig(
@@ -325,6 +364,7 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
         fitness=fitness,
         benchmarks=benchmarks,
         llm_judgment=llm_judgment,
+        tiers=tiers,
         include_globs=include_globs,
         exclude_globs=exclude_globs,
     )

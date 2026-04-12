@@ -78,6 +78,16 @@ benchmarks:
     - "--best"
     - "--force"
 
+# Model tiers for escalating quality/cost on evaluator tasks.
+# Low tier (provider default) handles generation + first fixer attempt.
+# Mid tier handles LLM judging + middle fixer attempts.
+# High tier handles the last fixer attempt.
+tiers:
+  mid_codex: "gpt-5.3-codex"
+  mid_claude: "sonnet"
+  high_codex: "gpt-5.4"
+  high_claude: "opus"
+
 llm_judgment:
   enabled: true
   top_quartile_only: false

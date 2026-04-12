@@ -40,12 +40,13 @@ class _ProxyHandler(BaseProxyHandler):
     model: str = "gpt-5.4-mini"
     timeout: int = 300
 
-    def _invoke_cli(self, prompt: str) -> str:
-        logger.info("codex-proxy: calling codex exec (%d-char prompt)", len(prompt))
+    def _invoke_cli(self, prompt: str, model: str = "") -> str:
+        use_model = model or self.model
+        logger.info("codex-proxy: calling codex exec (%d-char prompt, model=%s)", len(prompt), use_model)
         try:
             result = subprocess.run(
                 [self.codex_path, "exec",
-                 "-m", self.model,
+                 "-m", use_model,
                  "--full-auto"],
                 input=prompt,
                 capture_output=True,

@@ -178,6 +178,35 @@ def _patch_extract_diffs() -> None:
     code_utils.extract_diffs = _patched
 
 
+def _patch_iteration_retry() -> None:
+    """Add retry logic to OpenEvolve's iteration function.
+
+    When ``run_iteration_with_shared_db`` returns ``None`` (e.g. because the
+    LLM failed to update the changes_description, produced no valid diffs, or
+    hit another parse error) we retry up to 2 times.  Each retry re-samples
+    from the ensemble, so a different provider is likely selected — this is the
+    "swap providers on failure" behaviour.
+    """
+    import openevolve.iteration as iter_mod
+
+    _original = iter_mod.run_iteration_with_shared_db
+    _MAX_RETRIES = 2
+
+    async def _with_retry(iteration, config, database, evaluator, llm_ensemble, prompt_sampler):
+        for attempt in range(_MAX_RETRIES + 1):
+            result = await _original(iteration, config, database, evaluator, llm_ensemble, prompt_sampler)
+            if result is not None:
+                return result
+            if attempt < _MAX_RETRIES:
+                logger.info(
+                    "Iteration %d returned None (attempt %d/%d), retrying with fresh LLM sample",
+                    iteration + 1, attempt + 1, _MAX_RETRIES + 1,
+                )
+        return None
+
+    iter_mod.run_iteration_with_shared_db = _with_retry
+
+
 _patches_applied = False
 
 
@@ -189,6 +218,7 @@ def _apply_patches() -> None:
     _patch_extract_diffs()
     _patch_feature_dimension_defaults()
     _patch_logging_utf8()
+    _patch_iteration_retry()
     _patches_applied = True
 
 
@@ -628,6 +658,21 @@ def run_evolution_with_rotation(
             # Save best result to output/best/
             if result.best_code:
                 (best_dir / source_file.name).write_text(result.best_code, encoding="utf-8")
+
+            # Apply ALL accumulated best results to source files so the next
+            # slot evolves against an improved codebase (compile baselines,
+            # LLM judge context, and cross-file interactions all benefit).
+            applied = 0
+            for best_file in best_dir.iterdir():
+                if not best_file.is_file():
+                    continue
+                for f in all_source_files:
+                    if f.name == best_file.name:
+                        f.write_text(best_file.read_text(encoding="utf-8"), encoding="utf-8")
+                        applied += 1
+                        break
+            if applied:
+                logger.info("Applied %d best result(s) to source files for next slot", applied)
 
             # Save rotation state after each slot
             rotation_state = {

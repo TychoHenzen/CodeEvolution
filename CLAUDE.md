@@ -11,8 +11,9 @@ See `Reference.md` for the design rationale and `docs/superpowers/specs/2026-04-
 ## Tech Stack
 
 - Python 3.13, Click (CLI), OpenEvolve (evolutionary engine), Jinja2 (templates), PyYAML, openai (LLM client)
-- Three LLM backends (`provider` setting in config): `local` (llama-server/llama.cpp subprocess), `codex` (OpenAI Codex CLI via `codex_proxy.py`), `claude` (Claude Code CLI via `claude_proxy.py`)
+- Four LLM backends (`provider` setting in config): `local` (llama-server/llama.cpp subprocess), `codex` (OpenAI Codex CLI via `codex_proxy.py`), `claude` (Claude Code CLI via `claude_proxy.py`), `mixed` (codex + claude behind a routing proxy via `mixed_proxy.py`)
 - Codex/Claude proxies are lightweight HTTP servers that translate OpenAI API calls to CLI invocations, sharing `base_proxy.py` for handler and lifecycle code
+- Mixed proxy routes requests by model name to the correct backend, with automatic fallback if one backend returns empty/error
 - Default provider is `codex` (gpt-5.4-mini)
 
 ## Commands
@@ -38,7 +39,8 @@ codeevolve run --config .codeevolve/evolution.yaml
 The system is a thin wrapper over OpenEvolve with two CLI commands:
 
 1. **`codeevolve init`** (`init_project.py`) — scans a Rust crate, inserts EVOLVE-BLOCK markers, generates `.codeevolve/` with config YAML + evaluator.
-2. **`codeevolve run`** (`runner.py` + `llama_server.py`/`codex_proxy.py`/`claude_proxy.py`) — starts the configured LLM backend, builds OpenEvolve config, calls `run_evolution()`, stops backend on exit.
+2. **`codeevolve reinit`** — re-generates evaluator from existing config + syncs config with latest defaults (adds new sections like `tiers`).
+3. **`codeevolve run`** (`runner.py` + `llama_server.py`/`codex_proxy.py`/`claude_proxy.py`/`mixed_proxy.py`) — starts the configured LLM backend, builds OpenEvolve config, calls `run_evolution()`, stops backend on exit.
 
 The core value-add is the **4-layer evaluation pipeline** (`evaluator/pipeline.py`):
 - Layer 1: `cargo.py` — hard gates (cargo build + cargo test)
@@ -47,6 +49,8 @@ The core value-add is the **4-layer evaluation pipeline** (`evaluator/pipeline.p
 - Layer 4: `llm_judge.py` — LLM quality judgment via llama-server (top-quartile only, 3-run median)
 
 Config is a single dataclass hierarchy (`config.py`) loaded from YAML, with defaults in `codeevolve/defaults/evolution.yaml`.
+
+**Model tier escalation**: The evaluator uses three quality tiers (`low`/`mid`/`high`) to balance cost vs. quality. Low (provider default) handles generation + first fixer attempt; mid (sonnet/gpt-5.3-codex) handles LLM judging + middle fixer attempts; high (opus/gpt-5.4) handles the last fixer attempt. Tier config lives in the `tiers` YAML section and `ModelTiers` dataclass.
 
 ## Key Constraints
 
