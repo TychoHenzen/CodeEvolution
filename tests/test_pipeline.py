@@ -14,6 +14,13 @@ from codeevolve.evaluator.pipeline import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _mock_regenerate():
+    """Prevent gate-retry regeneration from making real API calls in tests."""
+    with patch("codeevolve.evaluator.pipeline.attempt_regenerate", return_value=None):
+        yield
+
+
 @pytest.fixture
 def pipeline(tmp_path):
     config = load_config()
@@ -37,7 +44,6 @@ def test_evaluation_result_fields():
     r = EvaluationResult(
         passed_gates=True,
         combined_score=0.75,
-        static_score=0.8,
         perf_score=0.75,
         llm_score=0.0,
     )
@@ -82,7 +88,6 @@ def test_pipeline_full_pass(mock_clean, mock_clippy, mock_test, mock_judge, pipe
     result = pipeline.evaluate(str(candidate_file))
     assert result.passed_gates is True
     assert result.combined_score > 0
-    assert result.static_score == 1.0  # no clippy warnings
     assert result.perf_score == 0.5  # baseline: norm_perf = 1.0/2.0 = 0.5
 
 
@@ -97,8 +102,8 @@ def test_pipeline_skips_llm_if_not_top_quartile(mock_clean, mock_clippy, mock_te
 
     mock_clippy.return_value = MagicMock(
         success=True,
-        warnings=[{"code": "clippy::style"}] * 20,
-        warning_counts={"style": 20},
+        warnings=[],
+        warning_counts={},
         elapsed_seconds=2.5,
     )
     mock_test.return_value = MagicMock(success=True, tests_passed=5, tests_failed=0, elapsed_seconds=1.0)
@@ -323,59 +328,38 @@ def test_all_scores_bounded_zero_one(mock_clean, mock_clippy, mock_test, mock_ju
     pipeline.config.benchmarks.custom_command = None
 
     result = pipeline.evaluate(str(candidate_file))
-    assert 0.0 <= result.static_score <= 1.0
     assert 0.0 <= result.perf_score <= 1.0
     assert 0.0 <= result.llm_score <= 1.0
 
 
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
 @patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_clean")
-def test_static_score_perfect_when_no_warnings(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
-    """Zero clippy warnings should yield static_score=1.0 (perfect)."""
-    mock_clippy.return_value = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
-    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
-
-    pipeline.config.benchmarks.binary_package = None
-    pipeline.config.benchmarks.custom_command = None
-    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
-
-    result = pipeline.evaluate(str(candidate_file))
-    assert result.static_score == 1.0
-
-
-@patch("codeevolve.evaluator.pipeline.run_cargo_test")
-@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
-@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
-def test_static_score_decreases_with_warnings(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
-    """More clippy warnings should lower static_score."""
+def test_clippy_warnings_fail_gate(mock_clean, mock_clippy, mock_test, mock_fix, pipeline, candidate_file):
+    """Clippy warnings are a hard gate — candidate fails if warnings remain."""
     mock_clippy.return_value = MagicMock(
         success=True,
-        warnings=[{"code": "clippy::style"}] * 5,
-        warning_counts={"style": 5},
+        warnings=[{"code": "clippy::style", "message": "needless return", "level": "warning", "file": "src/lib.rs", "line": 5}],
+        warning_counts={"style": 1},
         elapsed_seconds=1.0,
     )
     mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
 
-    pipeline.config.benchmarks.binary_package = None
-    pipeline.config.benchmarks.custom_command = None
-    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
-
     result = pipeline.evaluate(str(candidate_file))
-    assert 0.0 < result.static_score < 1.0
+    assert result.passed_gates is False
+    assert result.combined_score == 0.0
+    assert "clippy warnings" in result.error
 
 
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
 @patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_clean")
 def test_result_keeps_raw_counts_for_internal_use(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
-    """EvaluationResult still carries raw counts (tests_passed, clippy_warnings)
+    """EvaluationResult still carries raw counts (tests_passed, build_time)
     for internal logging, even though these should not go to OpenEvolve."""
     mock_clippy.return_value = MagicMock(
-        success=True,
-        warnings=[{"code": "clippy::style"}] * 3,
-        warning_counts={"style": 3},
-        elapsed_seconds=1.5,
+        success=True, warnings=[], warning_counts={}, elapsed_seconds=1.5,
     )
     mock_test.return_value = MagicMock(success=True, tests_passed=7, tests_failed=0, elapsed_seconds=0.5)
 
@@ -387,7 +371,7 @@ def test_result_keeps_raw_counts_for_internal_use(mock_clean, mock_clippy, mock_
     # Raw counts preserved in the dataclass
     assert result.tests_passed == 7
     assert result.tests_failed == 0
-    assert result.clippy_warnings == 3
+    assert result.clippy_warnings == 0
     assert result.build_time == 1.5
 
 
@@ -682,11 +666,12 @@ def test_test_failure_includes_artifacts(mock_clean, mock_clippy, mock_test, moc
     assert "needless_return" in result.artifacts["clippy_diagnostics"]
 
 
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
 @patch("codeevolve.evaluator.pipeline.run_cargo_test")
 @patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
 @patch("codeevolve.evaluator.pipeline.run_cargo_clean")
-def test_passing_candidate_includes_clippy_artifacts(mock_clean, mock_clippy, mock_test, pipeline, candidate_file):
-    """Passing candidate with clippy warnings should include clippy_diagnostics artifact."""
+def test_clippy_warning_failure_includes_diagnostics_artifact(mock_clean, mock_clippy, mock_test, mock_fix, pipeline, candidate_file):
+    """Candidate failing clippy gate should include clippy_diagnostics artifact."""
     mock_clippy.return_value = MagicMock(
         success=True,
         warnings=[
@@ -697,12 +682,8 @@ def test_passing_candidate_includes_clippy_artifacts(mock_clean, mock_clippy, mo
     )
     mock_test.return_value = MagicMock(success=True, tests_passed=3, tests_failed=0, elapsed_seconds=0.5)
 
-    pipeline.config.benchmarks.binary_package = None
-    pipeline.config.benchmarks.custom_command = None
-    pipeline.config.llm_judgment.enabled = False  # test doesn't need the judge
-
     result = pipeline.evaluate(str(candidate_file))
-    assert result.passed_gates is True
+    assert result.passed_gates is False
     assert "clippy_diagnostics" in result.artifacts
     assert "redundant_clone" in result.artifacts["clippy_diagnostics"]
 
@@ -744,3 +725,136 @@ def test_duplicate_candidate_has_empty_artifacts(mock_clean, mock_clippy, mock_f
     result = pipeline.evaluate(str(dup))
     assert result.passed_gates is False
     assert result.artifacts == {}
+
+
+# ---------------------------------------------------------------------------
+# Gate retry (regeneration) tests
+# ---------------------------------------------------------------------------
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_gate_retry_regenerates_on_failure(mock_clean, mock_clippy, mock_test, mock_judge, tmp_path):
+    """When candidate fails gates, regeneration retries produce a passing candidate."""
+    config = load_config()
+    config.evolution.max_gate_retries = 2
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    # First clippy call: build fails (original candidate broken)
+    # Second clippy call: build passes (after regeneration)
+    clippy_fail = MagicMock(success=False, error_output="compile error", elapsed_seconds=1.0)
+    clippy_pass = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
+    mock_clippy.side_effect = [clippy_fail, clippy_pass]
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+    mock_judge.return_value = MagicMock(combined_score=0.5)
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn main() { broken(); }", encoding="utf-8")
+
+    with patch(
+        "codeevolve.evaluator.pipeline.attempt_fix", return_value=None,
+    ), patch(
+        "codeevolve.evaluator.pipeline.attempt_regenerate",
+        return_value="fn main() { regenerated(); }",
+    ):
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is True
+    assert result.combined_score > 0
+
+
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_gate_retry_returns_zero_when_all_retries_fail(mock_clean, mock_clippy, mock_fix, tmp_path):
+    """When all regeneration retries also fail, returns score=0."""
+    config = load_config()
+    config.evolution.max_gate_retries = 2
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+
+    mock_clippy.return_value = MagicMock(success=False, error_output="compile error", elapsed_seconds=1.0)
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn main() { broken(); }", encoding="utf-8")
+
+    # Regeneration also produces broken code
+    with patch(
+        "codeevolve.evaluator.pipeline.attempt_regenerate",
+        return_value="fn main() { still_broken(); }",
+    ):
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is False
+    assert result.combined_score == 0.0
+
+
+@patch("codeevolve.evaluator.pipeline.attempt_fix", return_value=None)
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_gate_retry_skipped_when_disabled(mock_clean, mock_clippy, mock_fix, tmp_path):
+    """When max_gate_retries=0, no regeneration is attempted."""
+    config = load_config()
+    config.evolution.max_gate_retries = 0
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+
+    mock_clippy.return_value = MagicMock(success=False, error_output="compile error", elapsed_seconds=1.0)
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn main() { broken(); }", encoding="utf-8")
+
+    with patch(
+        "codeevolve.evaluator.pipeline.attempt_regenerate",
+    ) as mock_regen:
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is False
+    mock_regen.assert_not_called()
+
+
+@patch("codeevolve.evaluator.pipeline.judge_code")
+@patch("codeevolve.evaluator.pipeline.run_cargo_test")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clippy")
+@patch("codeevolve.evaluator.pipeline.run_cargo_clean")
+def test_gate_retry_writeback_updates_program_path(mock_clean, mock_clippy, mock_test, mock_judge, tmp_path):
+    """Regenerated candidate that passes gates gets written back to program_path."""
+    config = load_config()
+    config.evolution.max_gate_retries = 1
+    source_file = tmp_path / "lib.rs"
+    source_file.write_text("fn main() { original(); }", encoding="utf-8")
+    pipeline = EvaluationPipeline(config, tmp_path, source_file)
+    pipeline.config.benchmarks.binary_package = None
+    pipeline.config.benchmarks.custom_command = None
+
+    clippy_fail = MagicMock(success=False, error_output="compile error", elapsed_seconds=1.0)
+    clippy_pass = MagicMock(success=True, warnings=[], warning_counts={}, elapsed_seconds=1.0)
+    mock_clippy.side_effect = [clippy_fail, clippy_pass]
+    mock_test.return_value = MagicMock(success=True, tests_passed=1, tests_failed=0, elapsed_seconds=0.5)
+    mock_judge.return_value = MagicMock(combined_score=0.5)
+
+    candidate = tmp_path / "candidate.rs"
+    candidate.write_text("fn main() { broken(); }", encoding="utf-8")
+
+    with patch(
+        "codeevolve.evaluator.pipeline.attempt_fix", return_value=None,
+    ), patch(
+        "codeevolve.evaluator.pipeline.attempt_regenerate",
+        return_value="fn main() { regenerated(); }",
+    ):
+        result = pipeline.evaluate(str(candidate))
+
+    assert result.passed_gates is True
+    # program_path should have the regenerated code
+    updated = candidate.read_text(encoding="utf-8")
+    assert "regenerated" in updated
+    # Source file should be restored
+    assert source_file.read_text(encoding="utf-8") == "fn main() { original(); }"

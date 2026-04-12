@@ -13,9 +13,7 @@ from codeevolve.evaluator.cargo import (
     run_cargo_clippy,
     run_cargo_test,
     categorize_lint,
-    compute_clippy_score,
 )
-from codeevolve.config import ClippyWeights
 
 
 # --- Clippy JSON parsing ---
@@ -49,20 +47,6 @@ def test_categorize_lint_suspicious():
 
 def test_categorize_lint_unknown_defaults_to_style():
     assert categorize_lint("clippy::some_unknown_lint") == "style"
-
-
-# --- Clippy score computation ---
-
-def test_compute_clippy_score_no_warnings():
-    score = compute_clippy_score({}, ClippyWeights())
-    assert score == 0
-
-
-def test_compute_clippy_score_weighted():
-    counts = {"correctness": 1, "suspicious": 2, "style": 3}
-    weights = ClippyWeights()
-    # -(5*1 + 3*2 + 1*3) = -(5 + 6 + 3) = -14
-    assert compute_clippy_score(counts, weights) == -14
 
 
 # --- Cargo subprocess calls (using real cargo if available) ---

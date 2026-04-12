@@ -84,6 +84,105 @@ def parse_code_response(response: str) -> str | None:
     return None
 
 
+def build_regenerate_prompt(
+    original_code: str,
+    previous_error: str,
+    test_context: str = "",
+    frozen_context: str = "",
+) -> str:
+    """Build a prompt asking the LLM to generate a new improved version of code.
+
+    Unlike build_fix_prompt, this starts from the *original working code* and
+    asks for a fresh improvement, using the previous error as guidance on what
+    to avoid.
+    """
+    test_block = ""
+    if test_context:
+        capped = test_context[:4000]
+        test_block = f"""
+**Tests that must pass (DO NOT modify these — they are outside your control):**
+```rust
+{capped}
+```
+"""
+
+    frozen_block = ""
+    if frozen_context:
+        capped = frozen_context[:3000]
+        frozen_block = f"""
+**Frozen code (outside the evolvable region — DO NOT change these definitions):**
+```rust
+{capped}
+```
+"""
+
+    error_block = ""
+    if previous_error:
+        capped = previous_error[:3000]
+        error_block = f"""
+**A previous attempt to improve this code caused the following error:**
+```
+{capped}
+```
+Avoid making changes that would cause similar errors.
+"""
+
+    return f"""You are an expert Rust developer. Improve the following Rust code section.
+
+{frozen_block}{test_block}{error_block}
+**Code to improve (ONLY this code is under your control):**
+```rust
+{original_code}
+```
+
+Generate an improved version of this code. The code MUST compile with cargo build, pass all tests, and produce zero clippy warnings. Do NOT add tests, modules, main functions, struct definitions, enum definitions, type aliases, derive macros, or trait impls that weren't there before. Output ONLY the improved code inside a single ```rust code block.
+"""
+
+
+def attempt_regenerate(
+    original_code: str,
+    previous_error: str,
+    api_base: str,
+    model: str,
+    test_context: str = "",
+    frozen_context: str = "",
+) -> str | None:
+    """Ask the LLM to generate a new improved version of code.
+
+    Unlike attempt_fix, this starts from the *original working code* and asks
+    for an entirely new attempt, using the previous failure as guidance.
+    Returns the new code or None on failure.
+    """
+    prompt = build_regenerate_prompt(
+        original_code, previous_error,
+        test_context=test_context, frozen_context=frozen_context,
+    )
+
+    try:
+        client = OpenAI(base_url=api_base, api_key="no-key")
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=16384,
+        )
+        content = response.choices[0].message.content or ""
+        regenerated = parse_code_response(content)
+
+        if regenerated:
+            logger.info(
+                "LLM regeneration produced %d-char candidate", len(regenerated),
+            )
+            return regenerated
+        else:
+            logger.warning("LLM regeneration: failed to parse code (len=%d)", len(content))
+            return None
+
+    except Exception as e:
+        logger.warning("LLM regeneration call failed: %s", e)
+        return None
+
+
 def attempt_fix(
     code: str,
     error_type: str,

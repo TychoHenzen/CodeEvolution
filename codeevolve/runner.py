@@ -228,6 +228,73 @@ def _patch_initial_program_utf8() -> None:
     OpenEvolve._load_initial_program = _utf8_load
 
 
+def _patch_checkpoint_utf8() -> None:
+    """Force UTF-8 when writing checkpoint files on Windows.
+
+    OpenEvolve's controller._save_checkpoint opens the best-program file
+    with ``open(path, "w")`` which defaults to cp1252 on Windows.
+    Rust source containing Unicode (arrows, em-dashes, etc.) crashes with
+    UnicodeEncodeError: 'charmap' codec can't encode character.
+    """
+    import os
+    import time
+
+    from openevolve.controller import OpenEvolve
+    from openevolve.utils import format_metrics_safe
+
+    def _utf8_save_checkpoint(self, iteration: int) -> None:
+        checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{iteration}")
+        os.makedirs(checkpoint_path, exist_ok=True)
+
+        self.database.save(checkpoint_path, iteration)
+
+        best_program = None
+        if self.database.best_program_id:
+            best_program = self.database.get(self.database.best_program_id)
+        else:
+            best_program = self.database.get_best_program()
+
+        if best_program:
+            best_program_path = os.path.join(
+                checkpoint_path, f"best_program{self.file_extension}"
+            )
+            with open(best_program_path, "w", encoding="utf-8") as f:
+                f.write(best_program.code)
+
+            best_program_info_path = os.path.join(
+                checkpoint_path, "best_program_info.json"
+            )
+            with open(best_program_info_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "id": best_program.id,
+                        "generation": best_program.generation,
+                        "iteration": best_program.iteration_found,
+                        "current_iteration": iteration,
+                        "metrics": best_program.metrics,
+                        "language": best_program.language,
+                        "timestamp": best_program.timestamp,
+                        "saved_at": time.time(),
+                    },
+                    f,
+                    indent=2,
+                )
+
+            logger.info(
+                f"Saved best program at checkpoint {iteration} with metrics: "
+                f"{format_metrics_safe(best_program.metrics)}"
+            )
+
+        logger.info(
+            f"Saved checkpoint at iteration {iteration} to {checkpoint_path}"
+        )
+
+    OpenEvolve._save_checkpoint = _utf8_save_checkpoint
+
+
 def _apply_patches() -> None:
     """Apply all OpenEvolve monkey patches once."""
     global _patches_applied
@@ -238,6 +305,7 @@ def _apply_patches() -> None:
     _patch_logging_utf8()
     _patch_iteration_retry()
     _patch_initial_program_utf8()
+    _patch_checkpoint_utf8()
     _patches_applied = True
 
 

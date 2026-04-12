@@ -42,11 +42,12 @@ The system is a thin wrapper over OpenEvolve with two CLI commands:
 2. **`codeevolve reinit`** — re-generates evaluator from existing config + syncs config with latest defaults (adds new sections like `tiers`).
 3. **`codeevolve run`** (`runner.py` + `llama_server.py`/`codex_proxy.py`/`claude_proxy.py`/`mixed_proxy.py`) — starts the configured LLM backend, builds OpenEvolve config, calls `run_evolution()`, stops backend on exit.
 
-The core value-add is the **4-layer evaluation pipeline** (`evaluator/pipeline.py`):
-- Layer 1: `cargo.py` — hard gates (cargo build + cargo test)
-- Layer 2: `cargo.py` — Clippy static analysis with weighted lint scoring
-- Layer 3: `benchmark.py` — compile time, binary size, optional user benchmark
-- Layer 4: `llm_judge.py` — LLM quality judgment via llama-server (top-quartile only, 3-run median)
+The core value-add is the **3-layer evaluation pipeline** (`evaluator/pipeline.py`):
+- Layer 1: `cargo.py` — hard gates (cargo build + cargo clippy zero-warnings + cargo test), with LLM fixer retry loop
+- Layer 2: `benchmark.py` — LoC, compile time, binary size, optional user benchmark
+- Layer 3: `llm_judge.py` — LLM quality judgment via llama-server (top-quartile only, 3-run median)
+
+Failed-gate candidates trigger **regeneration retries** (`max_gate_retries`): the LLM generates a fresh improvement from the original working code (via `llm_fixer.attempt_regenerate`) rather than wasting the iteration with score=0. Fitness weights are 50/50 performance + LLM judgment (no separate static analysis score).
 
 Config is a single dataclass hierarchy (`config.py`) loaded from YAML, with defaults in `codeevolve/defaults/evolution.yaml`.
 

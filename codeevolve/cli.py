@@ -43,6 +43,31 @@ def _read_text_and_line_count(path: Path) -> tuple[str, int]:
     return text, max(1, len(text.splitlines()))
 
 
+# Minimum iterations a file must receive for evolution to be useful.
+# Below this the population can't fill and selection pressure is meaningless.
+_MIN_ITERS_PER_FILE = 50
+
+
+def _cap_files_for_budget(
+    n_files: int,
+    max_iterations: int,
+    population_size: int,
+    chunk_size: int,
+) -> int:
+    """Return the max number of files that fit the iteration budget.
+
+    Each file needs at least ``_MIN_ITERS_PER_FILE`` or ``population_size``
+    iterations (whichever is larger), rounded up to the next ``chunk_size``
+    boundary.
+    """
+    min_iters = max(_MIN_ITERS_PER_FILE, population_size)
+    # Round up to chunk boundary so the scheduler doesn't trim further
+    if chunk_size > 0:
+        min_iters = ((min_iters + chunk_size - 1) // chunk_size) * chunk_size
+    max_files = max(1, max_iterations // min_iters)
+    return min(n_files, max_files)
+
+
 @click.group()
 @click.version_option(package_name="codeevolve")
 def main():
@@ -344,16 +369,31 @@ def run(config_path: Path, fresh: bool):
             if len(marked_files) > 1:
                 from codeevolve.scheduler import build_roundrobin_schedule
 
+                # Rank by LoC (descending) and apply top_n_files cap
+                top_n = config.evolution.top_n_files
+                ranked = sorted(
+                    marked_files,
+                    key=lambda f: marked_file_lengths.get(
+                        f.relative_to(project_path).as_posix(), 0
+                    ),
+                    reverse=True,
+                )[:top_n]
+                ranked_rel = [f.relative_to(project_path).as_posix() for f in ranked]
+                ranked_lengths = {k: v for k, v in marked_file_lengths.items() if k in ranked_rel}
+
+                if len(marked_files) > top_n:
+                    click.echo(f"  Capped to top {top_n} files by LoC (from {len(marked_files)} marked)")
+
                 rr_schedule = build_roundrobin_schedule(
-                    [f.relative_to(project_path).as_posix() for f in marked_files],
+                    ranked_rel,
                     total_iterations=config.evolution.max_iterations,
                     chunk_size=config.evolution.checkpoint_interval,
-                    file_lengths=marked_file_lengths,
+                    file_lengths=ranked_lengths,
                 )
                 if rr_schedule:
-                    click.echo(f"  Round-robin schedule: {len(rr_schedule)} slots across {len(marked_files)} files")
+                    click.echo(f"  Round-robin schedule: {len(rr_schedule)} slots across {len(ranked)} files")
                     results = run_evolution_with_rotation(
-                        config_path, project_path, rr_schedule, marked_files,
+                        config_path, project_path, rr_schedule, ranked,
                         evaluator_path, checkpoint_path=checkpoint_path,
                     )
                     click.echo("\n-- Summary " + "-" * 45)

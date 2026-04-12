@@ -17,7 +17,7 @@ def test_load_default_config():
     assert config.llama_server.threads == 8
     assert config.llama_server.flash_attn is True
     assert config.evolution.max_iterations == 500
-    assert config.fitness.static_analysis_weight == 0.35
+    assert config.fitness.performance_weight == 0.50
 
 
 def test_load_config_from_yaml(tmp_path: Path):
@@ -44,15 +44,6 @@ def test_load_config_missing_file():
     """Loading a nonexistent file raises FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
         load_config(Path("/nonexistent/config.yaml"))
-
-
-def test_config_clippy_weights_default():
-    config = load_config()
-    assert config.fitness.clippy_weights.correctness == 5
-    assert config.fitness.clippy_weights.suspicious == 3
-    assert config.fitness.clippy_weights.complexity == 2
-    assert config.fitness.clippy_weights.perf == 2
-    assert config.fitness.clippy_weights.style == 1
 
 
 def test_config_to_openevolve_dict():

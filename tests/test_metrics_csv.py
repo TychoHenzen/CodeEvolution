@@ -9,7 +9,7 @@ from codeevolve.evaluator.pipeline import EvaluationResult
 def _make_csv_logger(csv_path: Path):
     """Build the same _log_metrics_csv / _generation state the rendered evaluator has."""
     fields = [
-        "generation", "combined_score", "passed_gates", "static_score",
+        "generation", "combined_score", "passed_gates",
         "perf_ratio", "llm_score", "clippy_warnings", "compile_time",
         "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
     ]
@@ -32,7 +32,6 @@ def _metrics_dict(**overrides) -> dict:
     defaults = {
         "combined_score": 0.75,
         "passed_gates": 1.0,
-        "static_score": -3.0,
         "perf_ratio": -100.0,
         "llm_score": 0.5,
         "clippy_warnings": 2.0,
@@ -108,7 +107,7 @@ def test_csv_all_fields_present(tmp_path):
         rows = list(reader)
 
     expected = {
-        "generation", "combined_score", "passed_gates", "static_score",
+        "generation", "combined_score", "passed_gates",
         "perf_ratio", "llm_score", "clippy_warnings", "compile_time",
         "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
     }
@@ -143,7 +142,6 @@ def _build_openevolve_metrics(result) -> dict:
     """
     return {
         "combined_score": result.combined_score / 2.0,
-        "static_score": result.static_score / 2.0,
         "perf_ratio": result.perf_ratio,
         "llm_score": result.llm_score / 2.0,
         "compile_time": result.compile_time,
@@ -169,7 +167,6 @@ def test_openevolve_metrics_exclude_raw_counts():
     result = EvaluationResult(
         passed_gates=True,
         combined_score=0.8,
-        static_score=0.9,
         perf_score=0.5,
         perf_ratio=1.0,
         llm_score=0.6,
@@ -195,7 +192,6 @@ def test_openevolve_metrics_halve_bounded_scores():
     result = EvaluationResult(
         passed_gates=True,
         combined_score=0.8,
-        static_score=1.0,   # perfect static
         perf_score=0.5,      # baseline norm_perf (internal, not sent to OpenEvolve)
         perf_ratio=1.0,      # baseline raw ratio (sent to OpenEvolve)
         llm_score=0.7,
@@ -205,7 +201,6 @@ def test_openevolve_metrics_halve_bounded_scores():
     )
     metrics = _build_openevolve_metrics(result)
     assert metrics["combined_score"] == 0.4    # 0.8 / 2.0
-    assert metrics["static_score"] == 0.5      # 1.0 / 2.0
     assert metrics["llm_score"] == 0.35        # 0.7 / 2.0
     # perf_ratio uses raw ratio (baseline=1.0), consistent with compile_time/binary_size/loc
     assert metrics["perf_ratio"] == 1.0
@@ -216,7 +211,6 @@ def test_openevolve_metrics_pass_through_ratios():
     result = EvaluationResult(
         passed_gates=True,
         combined_score=0.5,
-        static_score=0.8,
         perf_score=0.5,
         perf_ratio=1.15,     # 15% performance improvement over baseline
         llm_score=0.0,
@@ -236,7 +230,6 @@ def test_csv_metrics_include_everything():
     result = EvaluationResult(
         passed_gates=True,
         combined_score=0.8,
-        static_score=0.9,
         perf_score=0.5,
         perf_ratio=1.0,
         llm_score=0.6,
@@ -269,7 +262,6 @@ def test_openevolve_metrics_all_values_comparable_scale():
     result = EvaluationResult(
         passed_gates=True,
         combined_score=0.8,
-        static_score=1.0,
         perf_score=0.5,
         perf_ratio=1.0,
         llm_score=0.7,

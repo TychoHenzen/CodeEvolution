@@ -70,7 +70,6 @@ _MAX_CONSECUTIVE_DUPLICATES_WARN = 10
 
 
 from codeevolve.evaluator.cargo import (
-    compute_clippy_score,
     run_cargo_build,
     run_cargo_clean,
     run_cargo_clippy,
@@ -82,7 +81,7 @@ from codeevolve.evaluator.benchmark import (
     run_user_benchmark,
 )
 from codeevolve.evaluator.llm_judge import judge_code
-from codeevolve.evaluator.llm_fixer import attempt_fix
+from codeevolve.evaluator.llm_fixer import attempt_fix, attempt_regenerate
 
 
 def _extract_test_function(source: str, fn_name: str) -> str | None:
@@ -148,7 +147,6 @@ def _format_clippy_diagnostics(warnings: list[dict]) -> str:
 class EvaluationResult:
     passed_gates: bool
     combined_score: float
-    static_score: float = 0.0
     perf_score: float = 0.0
     perf_ratio: float = 1.0
     llm_score: float = 0.0
@@ -506,12 +504,59 @@ class EvaluationPipeline:
         try:
             result = self._evaluate_candidate()
 
+            # --- Gate retry: regenerate when candidate fails gates ---------
+            # Instead of returning score=0 (wasting an OpenEvolve iteration),
+            # ask the LLM to generate a fresh candidate from the original
+            # working code and re-evaluate.
+            max_retries = self.config.evolution.max_gate_retries
+            if not result.passed_gates and max_retries > 0:
+                if self._evolve_prefix is not None:
+                    parsed = parse_evolve_block(original_code)
+                    original_evolve = parsed[1] if parsed else original_code
+                else:
+                    original_evolve = original_code
+
+                for retry in range(max_retries):
+                    tier = self._fix_tier(retry, max_retries)
+                    model = self.config.tier_model(tier)
+                    logger.info(
+                        "Gate retry %d/%d: regenerating (tier=%s, prev: %s)",
+                        retry + 1, max_retries, tier,
+                        result.error[:100] if result.error else "unknown",
+                    )
+
+                    regenerated = attempt_regenerate(
+                        original_evolve,
+                        result.error,
+                        self.config.api_base,
+                        model,
+                        test_context=self._get_test_context(),
+                        frozen_context=self._get_frozen_context(),
+                    )
+
+                    if not regenerated or regenerated.strip() == original_evolve.strip():
+                        logger.warning("Gate retry %d: no change produced", retry + 1)
+                        continue
+
+                    regen_content = self._extract_evolve_content(regenerated)
+                    if self._evolve_prefix is not None:
+                        spliced = splice_evolve_block(
+                            self._evolve_prefix, regen_content, self._evolve_suffix
+                        )
+                    else:
+                        spliced = regen_content
+                    self.focus_file.write_text(spliced, encoding="utf-8")
+
+                    result = self._evaluate_candidate()
+                    if result.passed_gates:
+                        logger.info("Gate retry %d: candidate passed", retry + 1)
+                        break
+
             # --- Fixer writeback ------------------------------------------
-            # If the fixer changed the code and the candidate passed gates,
-            # write the fixed version back to program_path so OpenEvolve
-            # stores the correct (fixed) code instead of the original broken
-            # candidate.  This prevents a code-fitness mismatch where a
-            # high-scoring program's stored code is actually broken.
+            # If the fixer/regenerator changed the code and the candidate
+            # passed gates, write the fixed version back to program_path so
+            # OpenEvolve stores the correct code instead of the original
+            # broken candidate.
             if result.passed_gates:
                 current_code = self.focus_file.read_text(encoding="utf-8")
                 if current_code != candidate_code:
@@ -536,10 +581,13 @@ class EvaluationPipeline:
         """Run the unified pipeline on the candidate already written to disk.
 
         Single-build flow (incremental after baseline):
-        1. cargo clippy --release  →  build gate, clippy, release artifacts (incremental)
+        1. cargo clippy --release  →  build gate + clippy warnings gate + release artifacts
         2. cargo test              →  test gate
         3. cargo build --release   →  link binary (if measuring binary size)
         4. UPX + binary size       →  from release artifacts already on disk
+
+        Clippy warnings are treated as hard gates (like build/test failures).
+        If warnings remain after fixer attempts, the candidate fails with score 0.
         """
         project_path = self.project_path
         cargo = self.config.rust.cargo_path
@@ -660,27 +708,39 @@ class EvaluationPipeline:
                     artifacts=artifacts,
                 )
 
+            # --- Clippy warnings gate (treated like compiler errors) ---
+            if clippy.warnings:
+                if not is_last_attempt:
+                    diagnostics = _format_clippy_diagnostics(clippy.warnings)
+                    if _attempt_fix_and_track(
+                        "clippy warnings", diagnostics, attempt, attempt_label,
+                    ):
+                        continue
+                logger.info(
+                    "Layer 1 FAIL: %d clippy warnings remain after fixer",
+                    len(clippy.warnings),
+                )
+                diag = _format_clippy_diagnostics(clippy.warnings)
+                if diag:
+                    artifacts["clippy_diagnostics"] = _truncate_artifact(diag)
+                return EvaluationResult(
+                    passed_gates=False, combined_score=0.0,
+                    build_time=clippy.elapsed_seconds,
+                    tests_passed=test.tests_passed, tests_failed=test.tests_failed,
+                    clippy_warnings=len(clippy.warnings),
+                    error=f"{len(clippy.warnings)} clippy warnings",
+                    artifacts=artifacts,
+                )
+
             break
 
         logger.info(
-            "Layer 1 PASS: clippy+release %.1fs, %d/%d tests passed",
+            "Layer 1 PASS: clippy+release %.1fs, %d/%d tests passed, 0 warnings",
             clippy.elapsed_seconds, test.tests_passed,
             test.tests_passed + test.tests_failed,
         )
 
-        # --- Layer 2: Static analysis (already collected by clippy above) ---
-        raw_static = compute_clippy_score(clippy.warning_counts, cfg.fitness.clippy_weights)
-        penalty = abs(raw_static)
-        norm_static = 1.0 / (1.0 + penalty)
-        logger.info(
-            "Layer 2: %d clippy warnings %s, penalty=%d, static_score=%.3f",
-            len(clippy.warnings),
-            dict(clippy.warning_counts) if clippy.warning_counts else "{}",
-            penalty, norm_static,
-        )
-
-        # --- Layer 3: Performance ---
-        w_static = cfg.fitness.static_analysis_weight
+        # --- Layer 2: Performance ---
         w_perf = cfg.fitness.performance_weight
         loc = measure_loc(self.focus_file)
         binary_size = 0
@@ -707,20 +767,32 @@ class EvaluationPipeline:
         # Benchmark — only run for baseline and top-quartile candidates.
         # cargo bench is typically expensive (minutes), so we gate it the same
         # way LLM judgment is gated to avoid wasting time on mediocre candidates.
+        # When LOC and binary_size are both disabled, the prelim score is the
+        # same for all 0-warning candidates, so the gating degrades gracefully
+        # (all get benched once enough history exists).
         run_bench = False
         if cfg.benchmarks.custom_command:
             if is_baseline:
                 run_bench = True
             else:
-                # Compute preliminary score from static + LOC + binary to decide
-                prelim_loc_ratio = self._baseline_loc / loc if self._baseline_loc and loc else 1.0
-                prelim_binary_ratio = 1.0
-                if self._baseline_binary_size and binary_size:
-                    prelim_binary_ratio = self._baseline_binary_size / binary_size
-                prelim_perf = statistics.mean([prelim_loc_ratio, prelim_binary_ratio])
-                prelim_norm_perf = max(0.0, min(1.0, prelim_perf / 2.0))
-                prelim_score = (w_static * norm_static + w_perf * prelim_norm_perf) / (w_static + w_perf)
-                run_bench = self._is_top_quartile(prelim_score)
+                prelim_ratios = []
+                if cfg.benchmarks.measure_loc:
+                    prelim_ratios.append(
+                        self._baseline_loc / loc if self._baseline_loc and loc else 1.0
+                    )
+                if cfg.benchmarks.measure_binary_size and cfg.benchmarks.binary_package:
+                    if self._baseline_binary_size and binary_size:
+                        prelim_ratios.append(self._baseline_binary_size / binary_size)
+                    else:
+                        prelim_ratios.append(1.0)
+                if prelim_ratios:
+                    prelim_perf = statistics.mean(prelim_ratios)
+                    prelim_norm_perf = max(0.0, min(1.0, prelim_perf / 2.0))
+                    run_bench = self._is_top_quartile(prelim_norm_perf)
+                else:
+                    # No cheap perf dimensions enabled — bench all passing
+                    # candidates since we have no basis to filter.
+                    run_bench = True
                 if not run_bench:
                     logger.info("Layer 3: skipping benchmark (not top quartile)")
 
@@ -743,13 +815,14 @@ class EvaluationPipeline:
                 loc, compile_time, binary_size,
             )
 
-        # Compute perf as ratio to baseline (>1 = improvement, 1 = same)
+        # Compute perf as ratio to baseline (>1 = improvement, 1 = same).
+        # Only include dimensions that are enabled in config.
         loc_ratio = self._baseline_loc / loc if self._baseline_loc and loc else 1.0
-        perf_ratios = [loc_ratio]
+        perf_ratios = []
 
-        # Always include all *configured* dimensions so perf_ratios has a
-        # consistent number of components across evaluations.  Dimensions
-        # that weren't measured this round contribute 1.0 (neutral).
+        if cfg.benchmarks.measure_loc:
+            perf_ratios.append(loc_ratio)
+
         compile_ratio = 1.0
         if cfg.benchmarks.measure_compile_time:
             # Only meaningful for clean builds (baseline); incremental times
@@ -778,19 +851,18 @@ class EvaluationPipeline:
             binary_size, binary_ratio, perf_ratio, norm_perf,
         )
 
-        # --- Pre-LLM combined score ---
-        pre_llm = (w_static * norm_static + w_perf * norm_perf) / (w_static + w_perf)
-        self._score_history.append(pre_llm)
+        # --- Pre-LLM score (performance only, used for top-quartile gating) ---
+        self._score_history.append(norm_perf)
 
-        # --- Layer 4: LLM judgment (top quartile only) ---
+        # --- Layer 3: LLM judgment (top quartile only) ---
         norm_llm = 0.0
-        top_q = self._is_top_quartile(pre_llm)
+        top_q = self._is_top_quartile(norm_perf)
         if cfg.llm_judgment.enabled and (
             not cfg.llm_judgment.top_quartile_only or top_q
         ):
             code = self.focus_file.read_text(encoding="utf-8")
             judge_model = cfg.tier_model("mid")
-            logger.info("Layer 4: using mid-tier model %s for judgment", judge_model)
+            logger.info("Layer 3: using mid-tier model %s for judgment", judge_model)
             judgment = judge_code(
                 code=code,
                 api_base=cfg.api_base,
@@ -800,48 +872,38 @@ class EvaluationPipeline:
             )
             norm_llm = judgment.combined_score
             logger.info(
-                "Layer 4: LLM judge raw=%.2f, norm=%.3f",
+                "Layer 3: LLM judge raw=%.2f, norm=%.3f",
                 judgment.combined_score, norm_llm,
             )
         else:
             reason = "disabled" if not cfg.llm_judgment.enabled else (
                 "not top quartile (%.3f, need %d history, have %d)"
-                % (pre_llm, 4, len(self._score_history))
+                % (norm_perf, 4, len(self._score_history))
             )
-            logger.info("Layer 4: skipped - %s", reason)
+            logger.info("Layer 3: skipped - %s", reason)
 
         # --- Combined score ---
         combined = (
-            cfg.fitness.static_analysis_weight * norm_static
-            + cfg.fitness.performance_weight * norm_perf
+            cfg.fitness.performance_weight * norm_perf
             + cfg.fitness.llm_judgment_weight * norm_llm
         )
         logger.info(
-            "Score: %.3f*%.3f + %.3f*%.3f + %.3f*%.3f = %.4f",
-            cfg.fitness.static_analysis_weight, norm_static,
+            "Score: %.3f*%.3f + %.3f*%.3f = %.4f",
             cfg.fitness.performance_weight, norm_perf,
             cfg.fitness.llm_judgment_weight, norm_llm,
             combined,
         )
 
-        # Collect artifacts for ALL candidates (including passing ones).
-        # Clippy suggestions on passing code are valuable guidance for the
-        # next mutation (e.g. "consider using iter().take(n)").
-        diag = _format_clippy_diagnostics(clippy.warnings)
-        if diag:
-            artifacts["clippy_diagnostics"] = _truncate_artifact(diag)
-
         return EvaluationResult(
             passed_gates=True,
             combined_score=combined,
-            static_score=norm_static,
             perf_score=norm_perf,
             perf_ratio=perf_ratio,
             llm_score=norm_llm,
             build_time=clippy.elapsed_seconds,
             tests_passed=test.tests_passed,
             tests_failed=test.tests_failed,
-            clippy_warnings=len(clippy.warnings),
+            clippy_warnings=0,
             binary_size=binary_ratio,
             compile_time=compile_ratio,
             loc=loc_ratio,

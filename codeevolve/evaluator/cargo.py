@@ -11,7 +11,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from codeevolve.config import ClippyWeights
 
 # Mapping of known clippy lint prefixes to categories.
 _LINT_CATEGORIES = {
@@ -253,12 +252,3 @@ def run_cargo_clippy(
     )
 
 
-def compute_clippy_score(counts: dict[str, int], weights: ClippyWeights) -> int:
-    """Compute weighted clippy penalty score. More negative = worse."""
-    return -(
-        weights.correctness * counts.get("correctness", 0)
-        + weights.suspicious * counts.get("suspicious", 0)
-        + weights.complexity * counts.get("complexity", 0)
-        + weights.perf * counts.get("perf", 0)
-        + weights.style * counts.get("style", 0)
-    )

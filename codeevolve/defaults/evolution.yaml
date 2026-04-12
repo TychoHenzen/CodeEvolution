@@ -40,6 +40,7 @@ evolution:
   migration_interval: 20
   diff_based_evolution: true
   max_fix_attempts: 4
+  max_gate_retries: 2   # regeneration retries when candidate fails all gates
   checkpoint_interval: 10
   tech_debt_ledger: ""
   top_n_files: 20
@@ -57,19 +58,13 @@ rust:
   clippy_args: []
 
 fitness:
-  static_analysis_weight: 0.35
-  performance_weight: 0.35
-  llm_judgment_weight: 0.30
-  clippy_weights:
-    correctness: 5
-    suspicious: 3
-    complexity: 2
-    perf: 2
-    style: 1
+  performance_weight: 0.50
+  llm_judgment_weight: 0.50
 
 benchmarks:
   measure_compile_time: true
   measure_binary_size: true
+  measure_loc: true
   custom_command: null  # set to e.g. "cargo bench" with a score_regex to enable
   custom_command_score_regex: null
   binary_package: null

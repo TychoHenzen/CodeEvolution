@@ -42,6 +42,7 @@ class EvolutionConfig:
     migration_interval: int = 20
     diff_based_evolution: bool = False
     max_fix_attempts: int = 4  # LLM retry attempts on build/test failure
+    max_gate_retries: int = 2  # regeneration retries when candidate fails all gates
     checkpoint_interval: int = 10  # iterations between checkpoints
     tech_debt_ledger: str = ""  # path to TECH_DEBT_LEDGER.md relative to project root (empty = disabled)
     top_n_files: int = 20  # how many worst prod files to evolve
@@ -62,26 +63,16 @@ class RustConfig:
 
 
 @dataclass
-class ClippyWeights:
-    correctness: int = 5
-    suspicious: int = 3
-    complexity: int = 2
-    perf: int = 2
-    style: int = 1
-
-
-@dataclass
 class FitnessConfig:
-    static_analysis_weight: float = 0.35
-    performance_weight: float = 0.35
-    llm_judgment_weight: float = 0.30
-    clippy_weights: ClippyWeights = field(default_factory=ClippyWeights)
+    performance_weight: float = 0.50
+    llm_judgment_weight: float = 0.50
 
 
 @dataclass
 class BenchmarksConfig:
     measure_compile_time: bool = True
     measure_binary_size: bool = True
+    measure_loc: bool = True
     custom_command: Optional[str] = None
     custom_command_score_regex: Optional[str] = None
     binary_package: Optional[str] = None
@@ -341,9 +332,10 @@ def _dict_to_config(data: dict) -> CodeEvolveConfig:
     rust_data = data.get("rust", {})
     rust = RustConfig(**{k: v for k, v in rust_data.items() if v is not None or k != "target_dir"})
     fitness_data = data.get("fitness", {})
-    clippy_data = fitness_data.pop("clippy_weights", {})
-    clippy_weights = ClippyWeights(**clippy_data)
-    fitness = FitnessConfig(**fitness_data, clippy_weights=clippy_weights)
+    # Drop legacy fields that old YAML configs may still contain
+    fitness_data.pop("clippy_weights", None)
+    fitness_data.pop("static_analysis_weight", None)
+    fitness = FitnessConfig(**fitness_data)
     benchmarks_data = data.get("benchmarks", {})
     # YAML null becomes None for list fields; coerce to let dataclass defaults apply
     for _list_key in ("upx_args",):
