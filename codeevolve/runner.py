@@ -98,7 +98,7 @@ def build_openevolve_config_yaml(
     """Write an OpenEvolve-compatible config YAML and return its path."""
     oe_dict = config.to_openevolve_dict(frozen_context=frozen_context)
     yaml_path = output_dir / "openevolve_config.yaml"
-    with open(yaml_path, "w") as f:
+    with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump(oe_dict, f, default_flow_style=False, sort_keys=False)
     return yaml_path
 
@@ -210,6 +210,24 @@ def _patch_iteration_retry() -> None:
 _patches_applied = False
 
 
+def _patch_initial_program_utf8() -> None:
+    """Force UTF-8 when reading the initial program file on Windows.
+
+    runner.py writes evolve_program with encoding='utf-8', but
+    OpenEvolve's controller._load_initial_program opens it without
+    specifying encoding, defaulting to cp1252 on Windows Python.
+    This causes classic UTF-8-as-Latin-1 Mojibake for any non-ASCII
+    characters (em-dashes, arrows, etc.) in the evolvable code.
+    """
+    from openevolve.controller import OpenEvolve
+
+    def _utf8_load(self):
+        with open(self.initial_program_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    OpenEvolve._load_initial_program = _utf8_load
+
+
 def _apply_patches() -> None:
     """Apply all OpenEvolve monkey patches once."""
     global _patches_applied
@@ -219,6 +237,7 @@ def _apply_patches() -> None:
     _patch_feature_dimension_defaults()
     _patch_logging_utf8()
     _patch_iteration_retry()
+    _patch_initial_program_utf8()
     _patches_applied = True
 
 
@@ -275,7 +294,7 @@ def run_evolution(
         evaluator_path: Path to the generated evaluator.py.
         checkpoint_path: Optional path to a checkpoint directory to resume from.
     """
-    from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
+    from codeevolve.evaluator.pipeline import parse_evolve_block, splice_evolve_block, _MARKER_START, _MARKER_END
 
     _apply_patches()
 
@@ -317,7 +336,7 @@ def _run_single_file(
     from openevolve.controller import OpenEvolve
     from openevolve.config import load_config as oe_load_config
     from openevolve.api import EvolutionResult
-    from codeevolve.evaluator.pipeline import parse_evolve_block, _MARKER_START, _MARKER_END
+    from codeevolve.evaluator.pipeline import parse_evolve_block, splice_evolve_block, _MARKER_START, _MARKER_END
 
     original_code = initial_program.read_text(encoding="utf-8")
     backup_path = None
@@ -411,7 +430,12 @@ def _run_single_file(
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
     if result.best_code:
-        (best_dir / initial_program.name).write_text(result.best_code, encoding="utf-8")
+        # Splice markers back so best/ output can be copied to the source tree
+        if parsed:
+            best_full = splice_evolve_block(prefix, result.best_code, suffix)
+        else:
+            best_full = result.best_code
+        (best_dir / initial_program.name).write_text(best_full, encoding="utf-8")
 
     return result
 
@@ -567,6 +591,7 @@ def run_evolution_with_rotation(
         Dict mapping file_path to the best EvolutionResult for that file
     """
     from openevolve.api import EvolutionResult
+    from codeevolve.evaluator.pipeline import parse_evolve_block, splice_evolve_block
 
     _apply_patches()
 
@@ -655,9 +680,17 @@ def run_evolution_with_rotation(
 
             results[slot.file_path] = result
 
-            # Save best result to output/best/
+            # Save best result to output/best/ with markers preserved
             if result.best_code:
-                (best_dir / source_file.name).write_text(result.best_code, encoding="utf-8")
+                backup_content = backups[source_file].read_text(encoding="utf-8")
+                orig_parsed = parse_evolve_block(backup_content)
+                if orig_parsed:
+                    best_full = splice_evolve_block(
+                        orig_parsed[0], result.best_code, orig_parsed[2],
+                    )
+                else:
+                    best_full = result.best_code
+                (best_dir / source_file.name).write_text(best_full, encoding="utf-8")
 
             # Apply ALL accumulated best results to source files so the next
             # slot evolves against an improved codebase (compile baselines,
