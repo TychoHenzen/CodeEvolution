@@ -317,15 +317,12 @@ class EvaluationPipeline:
     def _fix_tier(self, attempt_number: int, max_fix_attempts: int) -> str:
         """Determine the model tier for a fixer attempt.
 
-        Attempt 0 (first fix): low tier (cheap/fast default model).
-        Middle attempts:        mid tier (sonnet / gpt-5.3-codex).
-        Last attempt:           high tier (opus / gpt-5.4).
+        First N-2 attempts: low tier (cheap/fast default model).
+        Last 2 attempts:    mid tier (sonnet / gpt-5.3-codex).
         """
-        if attempt_number == 0:
-            return "low"
-        if attempt_number >= max_fix_attempts - 1 and max_fix_attempts > 1:
-            return "high"
-        return "mid"
+        if attempt_number >= max_fix_attempts - 2 and max_fix_attempts > 2:
+            return "mid"
+        return "low"
 
     def _try_llm_fix(
         self,
@@ -340,8 +337,7 @@ class EvaluationPipeline:
 
         Only sends the EVOLVE-BLOCK content to the LLM, then splices the
         fix back into the original file structure.  Uses escalating model
-        tiers: low for the first attempt, mid for middle attempts, high
-        for the last attempt.
+        tiers: low for the first N-2 attempts, mid for the last 2.
         """
         current_code = self.focus_file.read_text(encoding="utf-8")
 
@@ -860,11 +856,10 @@ class EvaluationPipeline:
         if cfg.llm_judgment.enabled and (
             not cfg.llm_judgment.top_quartile_only or top_q
         ):
-            code = self.focus_file.read_text(encoding="utf-8")
-            judge_model = cfg.tier_model("mid")
-            logger.info("Layer 3: using mid-tier model %s for judgment", judge_model)
+            judge_model = cfg.tier_model("low")
+            logger.info("Layer 3: using low-tier model %s for judgment", judge_model)
             judgment = judge_code(
-                code=code,
+                file_path=self.focus_file,
                 api_base=cfg.api_base,
                 model=judge_model,
                 dimensions=cfg.llm_judgment.dimensions,

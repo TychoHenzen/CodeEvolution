@@ -95,11 +95,10 @@ class ModelTiers:
     """Model escalation tiers for evaluator tasks.
 
     Low tier uses the provider's default model (codex.model / claude.model).
-    Mid and high tiers upgrade for higher-stakes calls.
+    Mid tier upgrades for the final fixer attempts.
 
-    Low:  generation + fixer attempt 1
-    Mid:  LLM judging + fixer attempts 2..N-1
-    High: fixer last attempt
+    Low:  generation + LLM judging + fixer attempts 1..N-2
+    Mid:  fixer last 2 attempts
     """
     mid_codex: str = "gpt-5.3-codex"
     mid_claude: str = "sonnet"

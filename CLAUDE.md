@@ -45,13 +45,13 @@ The system is a thin wrapper over OpenEvolve with two CLI commands:
 The core value-add is the **3-layer evaluation pipeline** (`evaluator/pipeline.py`):
 - Layer 1: `cargo.py` — hard gates (cargo build + cargo clippy zero-warnings + cargo test), with LLM fixer retry loop
 - Layer 2: `benchmark.py` — LoC, compile time, binary size, optional user benchmark
-- Layer 3: `llm_judge.py` — LLM quality judgment via llama-server (top-quartile only, 3-run median)
+- Layer 3: `llm_judge.py` — diff-based LLM quality judgment (scores diffs as improvement/regression on [-0.99, +0.99], normalized to [0, 1])
 
 Failed-gate candidates trigger **regeneration retries** (`max_gate_retries`): the LLM generates a fresh improvement from the original working code (via `llm_fixer.attempt_regenerate`) rather than wasting the iteration with score=0. Fitness weights are 50/50 performance + LLM judgment (no separate static analysis score).
 
 Config is a single dataclass hierarchy (`config.py`) loaded from YAML, with defaults in `codeevolve/defaults/evolution.yaml`.
 
-**Model tier escalation**: The evaluator uses three quality tiers (`low`/`mid`/`high`) to balance cost vs. quality. Low (provider default) handles generation + first fixer attempt; mid (sonnet/gpt-5.3-codex) handles LLM judging + middle fixer attempts; high (opus/gpt-5.4) handles the last fixer attempt. Tier config lives in the `tiers` YAML section and `ModelTiers` dataclass.
+**Model tier escalation**: The evaluator uses two quality tiers (`low`/`mid`) to balance cost vs. quality. Low (provider default) handles generation + LLM judging + first N-2 fixer attempts; mid (sonnet/gpt-5.3-codex) handles the last 2 fixer attempts. Tier config lives in the `tiers` YAML section and `ModelTiers` dataclass.
 
 ## Key Constraints
 

@@ -74,9 +74,8 @@ benchmarks:
     - "--force"
 
 # Model tiers for escalating quality/cost on evaluator tasks.
-# Low tier (provider default) handles generation + first fixer attempt.
-# Mid tier handles LLM judging + middle fixer attempts.
-# High tier handles the last fixer attempt.
+# Low tier (provider default) handles generation + LLM judging + first N-2 fixer attempts.
+# Mid tier handles the last 2 fixer attempts.
 tiers:
   mid_codex: "gpt-5.3-codex"
   mid_claude: "sonnet"

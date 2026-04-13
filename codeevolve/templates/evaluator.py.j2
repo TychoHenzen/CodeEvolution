@@ -40,7 +40,21 @@ _CSV_FIELDS = [
     "perf_ratio", "llm_score", "clippy_warnings", "compile_time",
     "binary_size", "tests_passed", "tests_failed", "build_time", "loc",
 ]
-_generation = 0
+
+
+def _read_last_generation() -> int:
+    """Resume generation counter from existing metrics CSV."""
+    try:
+        if _CSV_PATH.exists() and _CSV_PATH.stat().st_size > 0:
+            with open(_CSV_PATH, "r") as f:
+                # Count data rows (skip header)
+                return sum(1 for _ in f) - 1
+    except OSError:
+        pass
+    return 0
+
+
+_generation = _read_last_generation()
 
 
 def _log_metrics_csv(metrics: dict):

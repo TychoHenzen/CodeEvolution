@@ -295,6 +295,59 @@ def _patch_checkpoint_utf8() -> None:
     OpenEvolve._save_checkpoint = _utf8_save_checkpoint
 
 
+def _patch_save_best_program_utf8() -> None:
+    """Force UTF-8 when saving the best program on Windows.
+
+    OpenEvolve's controller._save_best_program opens files with
+    ``open(path, "w")`` which defaults to cp1252 on Windows.
+    """
+    import os
+    import time
+
+    from openevolve.controller import OpenEvolve
+
+    def _utf8_save_best(self, program=None):
+        if program is None:
+            if self.database.best_program_id:
+                program = self.database.get(self.database.best_program_id)
+            else:
+                program = self.database.get_best_program()
+
+        if not program:
+            logger.warning("No best program found to save")
+            return
+
+        best_dir = os.path.join(self.output_dir, "best")
+        os.makedirs(best_dir, exist_ok=True)
+
+        filename = f"best_program{self.file_extension}"
+        code_path = os.path.join(best_dir, filename)
+
+        with open(code_path, "w", encoding="utf-8") as f:
+            f.write(program.code)
+
+        info_path = os.path.join(best_dir, "best_program_info.json")
+        with open(info_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "id": program.id,
+                    "generation": program.generation,
+                    "iteration": program.iteration_found,
+                    "timestamp": program.timestamp,
+                    "parent_id": program.parent_id,
+                    "metrics": program.metrics,
+                    "language": program.language,
+                    "saved_at": time.time(),
+                },
+                f,
+                indent=2,
+            )
+
+        logger.info(f"Saved best program to {code_path}")
+
+    OpenEvolve._save_best_program = _utf8_save_best
+
+
 def _apply_patches() -> None:
     """Apply all OpenEvolve monkey patches once."""
     global _patches_applied
@@ -306,6 +359,7 @@ def _apply_patches() -> None:
     _patch_iteration_retry()
     _patch_initial_program_utf8()
     _patch_checkpoint_utf8()
+    _patch_save_best_program_utf8()
     _patches_applied = True
 
 
@@ -392,26 +446,14 @@ def _run_single_file(
     evaluator_path: Path,
     output_dir: Path,
     checkpoint_path: str | None = None,
-    owns_backup: bool = True,
 ):
-    """Single-file evolution flow.
-
-    Args:
-        owns_backup: If True (default), back up and restore the source file.
-            Set to False when the caller (e.g. run_evolution_with_rotation)
-            manages backups externally.
-    """
+    """Single-file evolution flow."""
     from openevolve.controller import OpenEvolve
     from openevolve.config import load_config as oe_load_config
     from openevolve.api import EvolutionResult
     from codeevolve.evaluator.pipeline import parse_evolve_block, splice_evolve_block, _MARKER_START, _MARKER_END
 
     original_code = initial_program.read_text(encoding="utf-8")
-    backup_path = None
-    if owns_backup:
-        backup_path = output_dir / f"{initial_program.name}.backup"
-        backup_path.write_text(original_code, encoding="utf-8")
-        logger.info("Saved source backup to %s", backup_path)
 
     # Give OpenEvolve only the EVOLVE-BLOCK content so the LLM cannot
     # duplicate struct definitions, imports, or test modules that live
@@ -447,53 +489,48 @@ def _run_single_file(
             if "evaluate_stage1" not in f.read():
                 oe_config.evaluator.cascade_evaluation = False
 
-    try:
-        controller = OpenEvolve(
-            initial_program_path=str(evolve_program),
-            evaluation_file=str(evaluator_path),
-            config=oe_config,
-            output_dir=str(output_dir),
-        )
+    controller = OpenEvolve(
+        initial_program_path=str(evolve_program),
+        evaluation_file=str(evaluator_path),
+        config=oe_config,
+        output_dir=str(output_dir),
+    )
 
-        best_program = asyncio.run(controller.run(
-            iterations=config.evolution.max_iterations,
-            checkpoint_path=checkpoint_path,
-        ))
+    best_program = asyncio.run(controller.run(
+        iterations=config.evolution.max_iterations,
+        checkpoint_path=checkpoint_path,
+    ))
 
-        # Always save a final checkpoint so resume can pick up from here
-        if hasattr(controller, '_save_checkpoint') and hasattr(controller, 'database'):
-            try:
-                controller._save_checkpoint(controller.database.last_iteration)
-                logger.info("Saved final checkpoint at iteration %d", controller.database.last_iteration)
-            except Exception:
-                logger.warning("Failed to save final checkpoint", exc_info=True)
+    # Always save a final checkpoint so resume can pick up from here
+    if hasattr(controller, '_save_checkpoint') and hasattr(controller, 'database'):
+        try:
+            controller._save_checkpoint(controller.database.last_iteration)
+            logger.info("Saved final checkpoint at iteration %d", controller.database.last_iteration)
+        except Exception:
+            logger.warning("Failed to save final checkpoint", exc_info=True)
 
-        # Build result
-        best_score = 0.0
-        metrics: dict = {}
-        best_code = ""
+    # Build result
+    best_score = 0.0
+    metrics: dict = {}
+    best_code = ""
 
-        if best_program:
-            best_code = best_program.code
-            metrics = best_program.metrics or {}
-            if "combined_score" in metrics:
-                best_score = metrics["combined_score"]
-            elif metrics:
-                numeric_metrics = [v for v in metrics.values() if isinstance(v, (int, float))]
-                if numeric_metrics:
-                    best_score = sum(numeric_metrics) / len(numeric_metrics)
+    if best_program:
+        best_code = best_program.code
+        metrics = best_program.metrics or {}
+        if "combined_score" in metrics:
+            best_score = metrics["combined_score"]
+        elif metrics:
+            numeric_metrics = [v for v in metrics.values() if isinstance(v, (int, float))]
+            if numeric_metrics:
+                best_score = sum(numeric_metrics) / len(numeric_metrics)
 
-        result = EvolutionResult(
-            best_program=best_program,
-            best_score=best_score,
-            best_code=best_code,
-            metrics=metrics,
-            output_dir=str(output_dir),
-        )
-    finally:
-        if owns_backup and backup_path is not None:
-            initial_program.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
-            logger.info("Restored original source from backup")
+    result = EvolutionResult(
+        best_program=best_program,
+        best_score=best_score,
+        best_code=best_code,
+        metrics=metrics,
+        output_dir=str(output_dir),
+    )
 
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
@@ -504,6 +541,10 @@ def _run_single_file(
         else:
             best_full = result.best_code
         (best_dir / initial_program.name).write_text(best_full, encoding="utf-8")
+
+        # Apply best version to the source file
+        initial_program.write_text(best_full, encoding="utf-8")
+        logger.info("Applied best evolved version to %s", initial_program.name)
 
     return result
 
@@ -523,17 +564,6 @@ def _run_multi_file(
     from codeevolve.summary import summarize_files
     from codeevolve.bundler import create_bundle, create_workspace_bundle, extract_focus
     from codeevolve.crate_graph import detect_workspace
-
-    # Backup ALL source files (use relative path as name to avoid collisions
-    # when multiple crates have files with the same basename like lib.rs)
-    backups: dict[Path, Path] = {}
-    for f in source_files:
-        rel = f.relative_to(project_path)
-        backup_name = rel.as_posix().replace("/", "__") + ".backup"
-        backup_path = output_dir / backup_name
-        backup_path.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
-        backups[f] = backup_path
-    logger.info("Saved %d source backups", len(backups))
 
     # Generate summaries of all files for context
     summaries = summarize_files(source_files, project_path)
@@ -572,54 +602,48 @@ def _run_multi_file(
             if "evaluate_stage1" not in f.read():
                 oe_config.evaluator.cascade_evaluation = False
 
-    try:
-        controller = OpenEvolve(
-            initial_program_path=str(bundle_path),
-            evaluation_file=str(evaluator_path),
-            config=oe_config,
-            output_dir=str(output_dir),
-        )
+    controller = OpenEvolve(
+        initial_program_path=str(bundle_path),
+        evaluation_file=str(evaluator_path),
+        config=oe_config,
+        output_dir=str(output_dir),
+    )
 
-        best_program = asyncio.run(controller.run(
-            iterations=config.evolution.max_iterations,
-            checkpoint_path=checkpoint_path,
-        ))
+    best_program = asyncio.run(controller.run(
+        iterations=config.evolution.max_iterations,
+        checkpoint_path=checkpoint_path,
+    ))
 
-        # Always save a final checkpoint so resume can pick up from here
-        if hasattr(controller, '_save_checkpoint') and hasattr(controller, 'database'):
-            try:
-                controller._save_checkpoint(controller.database.last_iteration)
-                logger.info("Saved final checkpoint at iteration %d", controller.database.last_iteration)
-            except Exception:
-                logger.warning("Failed to save final checkpoint", exc_info=True)
+    # Always save a final checkpoint so resume can pick up from here
+    if hasattr(controller, '_save_checkpoint') and hasattr(controller, 'database'):
+        try:
+            controller._save_checkpoint(controller.database.last_iteration)
+            logger.info("Saved final checkpoint at iteration %d", controller.database.last_iteration)
+        except Exception:
+            logger.warning("Failed to save final checkpoint", exc_info=True)
 
-        # Build result
-        best_score = 0.0
-        metrics: dict = {}
-        best_code = ""
+    # Build result
+    best_score = 0.0
+    metrics: dict = {}
+    best_code = ""
 
-        if best_program:
-            best_code = best_program.code
-            metrics = best_program.metrics or {}
-            if "combined_score" in metrics:
-                best_score = metrics["combined_score"]
-            elif metrics:
-                numeric_metrics = [v for v in metrics.values() if isinstance(v, (int, float))]
-                if numeric_metrics:
-                    best_score = sum(numeric_metrics) / len(numeric_metrics)
+    if best_program:
+        best_code = best_program.code
+        metrics = best_program.metrics or {}
+        if "combined_score" in metrics:
+            best_score = metrics["combined_score"]
+        elif metrics:
+            numeric_metrics = [v for v in metrics.values() if isinstance(v, (int, float))]
+            if numeric_metrics:
+                best_score = sum(numeric_metrics) / len(numeric_metrics)
 
-        result = EvolutionResult(
-            best_program=best_program,
-            best_score=best_score,
-            best_code=best_code,
-            metrics=metrics,
-            output_dir=str(output_dir),
-        )
-    finally:
-        # Restore ALL original source files
-        for f, backup in backups.items():
-            f.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
-        logger.info("Restored %d source files from backups", len(backups))
+    result = EvolutionResult(
+        best_program=best_program,
+        best_score=best_score,
+        best_code=best_code,
+        metrics=metrics,
+        output_dir=str(output_dir),
+    )
 
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
@@ -628,6 +652,10 @@ def _run_multi_file(
         focus_content = extract_focus(result.best_code)
         best_content = focus_content if focus_content else result.best_code
         (best_dir / focus_file.name).write_text(best_content, encoding="utf-8")
+
+        # Apply best version to source file so the program reflects improvements
+        focus_file.write_text(best_content, encoding="utf-8")
+        logger.info("Applied best evolved version to %s", focus_file.name)
 
     return result
 
@@ -650,7 +678,7 @@ def run_evolution_with_rotation(
         config_path: Path to evolution.yaml
         project_path: Root of the Rust project
         schedule: List of ScheduleSlot from build_schedule()
-        all_source_files: All marked files (for backup/restore and bundling context)
+        all_source_files: All marked files (for bundling context)
         evaluator_path: Path to evaluator.py
         checkpoint_path: Path to checkpoint to resume from (used to find rotation
             state only; each slot starts a fresh OpenEvolve run)
@@ -659,7 +687,6 @@ def run_evolution_with_rotation(
         Dict mapping file_path to the best EvolutionResult for that file
     """
     from openevolve.api import EvolutionResult
-    from codeevolve.evaluator.pipeline import parse_evolve_block, splice_evolve_block
 
     _apply_patches()
 
@@ -680,125 +707,88 @@ def run_evolution_with_rotation(
         except (json.JSONDecodeError, OSError):
             logger.warning("Could not read rotation state, starting from slot 0")
 
-    # Backup ALL source files once at the start
-    backups: dict[Path, Path] = {}
-    for f in all_source_files:
-        rel = f.relative_to(project_path)
-        backup_name = rel.as_posix().replace("/", "__") + ".backup"
-        backup_path = output_dir / backup_name
-        backup_path.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
-        backups[f] = backup_path
-    logger.info("Saved %d source backups for rotation", len(backups))
-
     results: dict[str, EvolutionResult] = {}
     best_dir = output_dir / "best"
     best_dir.mkdir(exist_ok=True)
 
-    try:
-        for i, slot in enumerate(schedule):
-            if i < start_slot_index:
-                logger.info("Skipping completed slot %d/%d (%s)", i + 1, len(schedule), slot.file_path)
-                continue
+    for i, slot in enumerate(schedule):
+        if i < start_slot_index:
+            logger.info("Skipping completed slot %d/%d (%s)", i + 1, len(schedule), slot.file_path)
+            continue
 
-            slot_iterations = slot.end_iter - slot.start_iter
-            logger.info(
-                "  [Slot %d/%d] Evolving %s (iterations %d-%d)",
-                i + 1, len(schedule), slot.file_path, slot.start_iter, slot.end_iter,
+        slot_iterations = slot.end_iter - slot.start_iter
+        logger.info(
+            "  [Slot %d/%d] Evolving %s (iterations %d-%d)",
+            i + 1, len(schedule), slot.file_path, slot.start_iter, slot.end_iter,
+        )
+
+        # Find the actual Path object for slot.file_path from all_source_files
+        source_file = None
+        for f in all_source_files:
+            rel = f.relative_to(project_path)
+            if rel.as_posix() == slot.file_path or str(rel) == slot.file_path:
+                source_file = f
+                break
+
+        if source_file is None:
+            logger.warning("Could not find source file for slot: %s, skipping", slot.file_path)
+            continue
+
+        # Create a per-slot output directory
+        slot_output_dir = output_dir / f"slot_{i}"
+        slot_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a copy of config with modified max_iterations for this slot
+        slot_config = copy.deepcopy(config)
+        slot_config.evolution.max_iterations = slot_iterations
+
+        # Regenerate evaluator.py so the pipeline focus file matches the
+        # source file assigned to this slot.
+        regenerate_evaluator(project_path, config_path, focus_file=source_file)
+
+        # Clear root logger handlers to prevent duplication.
+        # OpenEvolve's _setup_logging() appends new handlers without
+        # removing old ones, so each slot would otherwise add another
+        # pair (file + console), causing N-fold log duplication.
+        _clear_root_handlers()
+
+        result = _run_single_file(
+            slot_config,
+            project_path,
+            source_file,
+            evaluator_path,
+            slot_output_dir,
+            checkpoint_path=None,  # each slot is a fresh OE run
+        )
+
+        results[slot.file_path] = result
+
+        # Copy best result to global best_dir — prefer the spliced file
+        # from slot's best_dir, fall back to raw result.best_code
+        slot_best = slot_output_dir / "best" / source_file.name
+        if slot_best.exists():
+            (best_dir / source_file.name).write_text(
+                slot_best.read_text(encoding="utf-8"), encoding="utf-8",
             )
+        elif result.best_code:
+            (best_dir / source_file.name).write_text(result.best_code, encoding="utf-8")
 
-            # Find the actual Path object for slot.file_path from all_source_files
-            source_file = None
-            for f in all_source_files:
-                rel = f.relative_to(project_path)
-                if rel.as_posix() == slot.file_path or str(rel) == slot.file_path:
-                    source_file = f
-                    break
-
-            if source_file is None:
-                logger.warning("Could not find source file for slot: %s, skipping", slot.file_path)
-                continue
-
-            # Create a per-slot output directory
-            slot_output_dir = output_dir / f"slot_{i}"
-            slot_output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Create a copy of config with modified max_iterations for this slot
-            slot_config = copy.deepcopy(config)
-            slot_config.evolution.max_iterations = slot_iterations
-
-            # Regenerate evaluator.py so the pipeline focus file matches the
-            # source file assigned to this slot.
-            regenerate_evaluator(project_path, config_path, focus_file=source_file)
-
-            # Clear root logger handlers to prevent duplication.
-            # OpenEvolve's _setup_logging() appends new handlers without
-            # removing old ones, so each slot would otherwise add another
-            # pair (file + console), causing N-fold log duplication.
-            _clear_root_handlers()
-
-            result = _run_single_file(
-                slot_config,
-                project_path,
-                source_file,
-                evaluator_path,
-                slot_output_dir,
-                checkpoint_path=None,  # each slot is a fresh OE run
-                owns_backup=False,  # rotation manages backups externally
-            )
-
-            results[slot.file_path] = result
-
-            # Save best result to output/best/ with markers preserved
-            if result.best_code:
-                backup_content = backups[source_file].read_text(encoding="utf-8")
-                orig_parsed = parse_evolve_block(backup_content)
-                if orig_parsed:
-                    best_full = splice_evolve_block(
-                        orig_parsed[0], result.best_code, orig_parsed[2],
-                    )
-                else:
-                    best_full = result.best_code
-                (best_dir / source_file.name).write_text(best_full, encoding="utf-8")
-
-            # Apply ALL accumulated best results to source files so the next
-            # slot evolves against an improved codebase (compile baselines,
-            # LLM judge context, and cross-file interactions all benefit).
-            applied = 0
-            for best_file in best_dir.iterdir():
-                if not best_file.is_file():
-                    continue
-                for f in all_source_files:
-                    if f.name == best_file.name:
-                        f.write_text(best_file.read_text(encoding="utf-8"), encoding="utf-8")
-                        applied += 1
-                        break
-            if applied:
-                logger.info("Applied %d best result(s) to source files for next slot", applied)
-
-            # Save rotation state after each slot
-            rotation_state = {
-                "current_slot_index": i + 1,
-                "schedule": [
-                    {
-                        "file_path": s.file_path,
-                        "start_iter": s.start_iter,
-                        "end_iter": s.end_iter,
-                    }
-                    for s in schedule
-                ],
-            }
-            rotation_state_path.write_text(
-                json.dumps(rotation_state, indent=2),
-                encoding="utf-8",
-            )
-            logger.info("Saved rotation state: slot %d/%d complete", i + 1, len(schedule))
-    finally:
-        # Restore ALL original source files
-        for f, backup in backups.items():
-            try:
-                f.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
-            except OSError:
-                logger.warning("Failed to restore backup for %s", f)
-        logger.info("Restored %d source files from backups", len(backups))
+        # Save rotation state after each slot
+        rotation_state = {
+            "current_slot_index": i + 1,
+            "schedule": [
+                {
+                    "file_path": s.file_path,
+                    "start_iter": s.start_iter,
+                    "end_iter": s.end_iter,
+                }
+                for s in schedule
+            ],
+        }
+        rotation_state_path.write_text(
+            json.dumps(rotation_state, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Saved rotation state: slot %d/%d complete", i + 1, len(schedule))
 
     return results

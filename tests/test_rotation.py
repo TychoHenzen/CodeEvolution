@@ -590,51 +590,19 @@ class TestRotationBestFiles:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Source file backup and restore
+# Tests: Error propagation
 # ---------------------------------------------------------------------------
 
-class TestRotationBackupRestore:
-    """Source files are backed up at the start and restored at the end."""
+class TestRotationErrorPropagation:
+    """Errors from _run_single_file propagate to the caller."""
 
-    def test_source_files_restored_after_rotation(self, tmp_path: Path):
-        project_path = tmp_path / "project"
-        project_path.mkdir()
-        config_path = _make_config_path(project_path)
-        evaluator_path = _make_evaluator(project_path)
-
-        source_files = _setup_source_files(project_path, [
-            "src/render.rs",
-            "src/shape.rs",
-        ])
-
-        # Record original content
-        original_contents = {f: f.read_text(encoding="utf-8") for f in source_files}
-
-        schedule = [
-            ScheduleSlot(file_path="src/render.rs", start_iter=0, end_iter=50),
-        ]
-
-        mock_result = _make_mock_result()
-
-        with patch("codeevolve.runner._run_single_file", return_value=mock_result):
-            run_evolution_with_rotation(
-                config_path, project_path, schedule, source_files,
-                evaluator_path,
-            )
-
-        # Verify all files were restored to original content
-        for f in source_files:
-            assert f.read_text(encoding="utf-8") == original_contents[f]
-
-    def test_source_files_restored_on_error(self, tmp_path: Path):
-        """Even if _run_single_file raises, source files should be restored."""
+    def test_error_propagates_from_single_file(self, tmp_path: Path):
         project_path = tmp_path / "project"
         project_path.mkdir()
         config_path = _make_config_path(project_path)
         evaluator_path = _make_evaluator(project_path)
 
         source_files = _setup_source_files(project_path, ["src/render.rs"])
-        original_content = source_files[0].read_text(encoding="utf-8")
 
         schedule = [
             ScheduleSlot(file_path="src/render.rs", start_iter=0, end_iter=50),
@@ -646,5 +614,3 @@ class TestRotationBackupRestore:
                     config_path, project_path, schedule, source_files,
                     evaluator_path,
                 )
-
-        assert source_files[0].read_text(encoding="utf-8") == original_content
