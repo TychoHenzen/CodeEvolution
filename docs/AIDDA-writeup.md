@@ -54,9 +54,11 @@ After each evolution slot, the system doesn't just take the winner — it extrac
 
 To balance cost and quality, the evaluator uses a tiered model system. The low tier (provider's default model — e.g., Haiku for Claude, gpt-5.4-mini for Codex) handles the bulk of work: code generation, LLM judging, and early fixer attempts. The mid tier (Sonnet / gpt-5.3-codex) kicks in for the final fixer attempts where a stronger model is more likely to resolve stubborn compilation errors. This avoids spending premium model tokens on routine mutations while reserving them for the hardest recovery scenarios.
 
-### Schedule shuffling
+### Iteration scheduling
 
-When evolving multiple files, a deterministic schedule means restarts always visit the same high-priority files first — introducing restart bias. CodeEvolution supports weighted random permutation of the file schedule, so each run explores files in a different order while still respecting priority weights derived from tech debt scores and file length.
+When evolving a workspace with many files, the system needs to decide how many evolution iterations to spend on each file and in what order. The scheduler allocates iterations proportionally to *tech debt scores* — per-file quality scores from a `TECH_DEBT_LEDGER.md` file, if one exists in the project. This ledger is produced externally (by a separate static analysis tool) and contains structural/semantic quality scores for each source file. Files with higher debt get more iterations. File length provides a secondary bias (longer files get a gentle boost) regardless of whether a ledger exists. When no ledger is present, all files start with equal base scores but length bias still differentiates them, so longer files get somewhat more iterations.
+
+A deterministic schedule means restarts always visit the same high-priority files first — introducing restart bias. CodeEvolution supports weighted random permutation of the schedule, so each run explores files in a different order while still respecting priority weights.
 
 ### EVOLVE-BLOCK isolation and context bundling
 
