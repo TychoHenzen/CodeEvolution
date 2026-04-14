@@ -162,6 +162,8 @@ def run_user_benchmark(
     normalized to milliseconds using standard time unit conversions.
     """
     try:
+        # shell=True: command comes from the user's own evolution.yaml config,
+        # same trust level as a Makefile or shell script.
         proc = subprocess.run(
             command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
         )

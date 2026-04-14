@@ -23,8 +23,8 @@ claude:
   timeout: 300
 
 llama_server:
-  server_path: "D:/Ollama/whiscortex-training/llama.cpp/build/bin/Release/llama-server.exe"
-  model_path: "D:/Ollama/llama.cpp models/qwen2.5-coder-14b-instruct-abliterated-q4_k_m.gguf"
+  server_path: "llama-server"
+  model_path: "model.gguf"  # absolute path to your GGUF model file
   port: 8080
   gpu_layers: 30
   context_size: 8192

@@ -16,7 +16,7 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 @dataclass
 class LlamaServerConfig:
     server_path: str = "llama-server"
-    model_path: str = "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
+    model_path: str = "model.gguf"
     port: int = 8080
     gpu_layers: int = 30
     context_size: int = 8192
