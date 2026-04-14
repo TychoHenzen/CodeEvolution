@@ -7,6 +7,9 @@ from codeevolve.config import load_config
 from codeevolve.runner import (
     build_openevolve_config_yaml,
     _clear_root_handlers,
+    _extract_merge_patches,
+    _apply_merge_patches,
+    merge_top_candidates,
     _normalize_llm_diffs,
     _run_multi_file,
     _run_single_file,
@@ -448,3 +451,156 @@ class TestFinalCheckpointSave:
                 config, sample_workspace, marked,
                 eval_file, output_dir,
             )
+
+
+# ---------------------------------------------------------------------------
+# Candidate merge tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractMergePatches:
+    """Tests for _extract_merge_patches: diffing candidate vs original."""
+
+    def test_single_line_change(self):
+        original = "fn foo() {}\nfn bar() {}\n"
+        candidate = "fn foo() { improved(); }\nfn bar() {}\n"
+        patches = _extract_merge_patches(original, candidate)
+        assert len(patches) == 1
+        assert "fn foo() {}" in patches[0][0]
+        assert "fn foo() { improved(); }" in patches[0][1]
+
+    def test_no_changes_returns_empty(self):
+        code = "fn foo() {}\n"
+        assert _extract_merge_patches(code, code) == []
+
+    def test_multiple_changes(self):
+        original = "let a = 1;\nlet b = 2;\nlet c = 3;\n"
+        candidate = "let a = 10;\nlet b = 2;\nlet c = 30;\n"
+        patches = _extract_merge_patches(original, candidate)
+        assert len(patches) == 2
+
+    def test_deletion_has_empty_replace(self):
+        original = "line1\nline2\nline3\n"
+        candidate = "line1\nline3\n"
+        patches = _extract_merge_patches(original, candidate)
+        assert len(patches) == 1
+        assert "line2" in patches[0][0]
+
+
+class TestApplyMergePatches:
+    """Tests for _apply_merge_patches: applying non-conflicting changes."""
+
+    def test_applies_matching_patch(self):
+        code = "fn foo() {}\nfn bar() {}\n"
+        patches = [("fn foo() {}", "fn foo() { better(); }")]
+        result = _apply_merge_patches(code, patches)
+        assert "fn foo() { better(); }" in result
+        assert "fn bar() {}" in result
+
+    def test_skips_non_matching_patch(self):
+        code = "fn foo() { already_changed(); }\n"
+        patches = [("fn foo() {}", "fn foo() { other(); }")]
+        result = _apply_merge_patches(code, patches)
+        assert result == code  # unchanged, patch didn't match
+
+    def test_multiple_patches_applied(self):
+        code = "let a = 1;\nlet b = 2;\nlet c = 3;\n"
+        patches = [
+            ("let a = 1;", "let a = 10;"),
+            ("let c = 3;", "let c = 30;"),
+        ]
+        result = _apply_merge_patches(code, patches)
+        assert "let a = 10;" in result
+        assert "let b = 2;" in result
+        assert "let c = 30;" in result
+
+    def test_empty_search_skipped(self):
+        code = "fn foo() {}\n"
+        patches = [("", "// inserted line\n")]
+        result = _apply_merge_patches(code, patches)
+        assert result == code  # pure insertions are skipped
+
+
+class TestMergeTopCandidates:
+    """Tests for merge_top_candidates: combining improvements from top K."""
+
+    def _mock_db(self, programs):
+        """Build a mock database that returns the given programs from get_top_programs."""
+        db = MagicMock()
+        db.get_top_programs = MagicMock(return_value=programs)
+        return db
+
+    def _mock_program(self, code):
+        prog = MagicMock()
+        prog.code = code
+        return prog
+
+    def test_merges_non_conflicting_changes(self):
+        original = "fn foo() {}\nfn bar() {}\nfn baz() {}\n"
+        winner = "fn foo() { improved(); }\nfn bar() {}\nfn baz() {}\n"
+        runner_up = "fn foo() {}\nfn bar() {}\nfn baz() { also_improved(); }\n"
+
+        programs = [self._mock_program(winner), self._mock_program(runner_up)]
+        db = self._mock_db(programs)
+
+        result = merge_top_candidates(original, winner, db, merge_top_k=5)
+        assert "fn foo() { improved(); }" in result
+        assert "fn baz() { also_improved(); }" in result
+
+    def test_skips_conflicting_changes(self):
+        original = "fn foo() {}\nfn bar() {}\n"
+        winner = "fn foo() { winner_version(); }\nfn bar() {}\n"
+        runner_up = "fn foo() { runner_up_version(); }\nfn bar() {}\n"
+
+        programs = [self._mock_program(winner), self._mock_program(runner_up)]
+        db = self._mock_db(programs)
+
+        result = merge_top_candidates(original, winner, db, merge_top_k=5)
+        assert "fn foo() { winner_version(); }" in result
+        assert "runner_up_version" not in result
+
+    def test_single_program_returns_winner(self):
+        winner = "fn foo() { improved(); }\n"
+        programs = [self._mock_program(winner)]
+        db = self._mock_db(programs)
+
+        result = merge_top_candidates("fn foo() {}\n", winner, db, merge_top_k=5)
+        assert result == winner
+
+    def test_identical_candidates_skipped(self):
+        original = "fn foo() {}\n"
+        winner = "fn foo() { improved(); }\n"
+        # Runner-up has same code as winner
+        programs = [self._mock_program(winner), self._mock_program(winner)]
+        db = self._mock_db(programs)
+
+        result = merge_top_candidates(original, winner, db, merge_top_k=5)
+        assert result == winner
+
+    def test_candidate_matching_original_skipped(self):
+        original = "fn foo() {}\n"
+        winner = "fn foo() { improved(); }\n"
+        # Runner-up is identical to original (no improvement)
+        programs = [self._mock_program(winner), self._mock_program(original)]
+        db = self._mock_db(programs)
+
+        result = merge_top_candidates(original, winner, db, merge_top_k=5)
+        assert result == winner
+
+    def test_three_way_merge(self):
+        original = "line1\nline2\nline3\nline4\nline5\n"
+        winner = "line1_improved\nline2\nline3\nline4\nline5\n"
+        runner1 = "line1\nline2\nline3_improved\nline4\nline5\n"
+        runner2 = "line1\nline2\nline3\nline4\nline5_improved\n"
+
+        programs = [
+            self._mock_program(winner),
+            self._mock_program(runner1),
+            self._mock_program(runner2),
+        ]
+        db = self._mock_db(programs)
+
+        result = merge_top_candidates(original, winner, db, merge_top_k=5)
+        assert "line1_improved" in result
+        assert "line3_improved" in result
+        assert "line5_improved" in result

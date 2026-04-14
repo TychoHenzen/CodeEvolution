@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 
-from codeevolve.base_proxy import BaseProxyHandler, BaseProxy
+from codeevolve.base_proxy import BaseProxyHandler, BaseProxy, _CREATIONFLAGS
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ def _find_claude(configured_path: str) -> list[str]:
                 result = subprocess.run(
                     [wsl, "bash", "-lc", f"which {configured_path}"],
                     capture_output=True, text=True, timeout=10,
+                    creationflags=_CREATIONFLAGS,
                 )
                 linux_path = result.stdout.strip()
                 if linux_path and result.returncode == 0:
@@ -59,44 +60,56 @@ class _ProxyHandler(BaseProxyHandler):
     timeout: int = 300
 
     def _invoke_cli(self, prompt: str, model: str = "") -> str:
+        from codeevolve.base_proxy import _track, _untrack, _kill_tree, _CREATIONFLAGS
+
         use_model = model or self.model
         logger.info("claude-proxy: calling claude -p (%d-char prompt, model=%s)", len(prompt), use_model)
+        proc = None
         try:
-            result = subprocess.run(
+            proc = _track(subprocess.Popen(
                 [*self.claude_cmd,
                  "--model", use_model,
                  "--no-session-persistence",
                  "--effort", self.effort,
                  "-p",
-                 "Follow the instructions provided via stdin. "
-                 "Output ONLY the code."],
-                input=prompt,
-                capture_output=True,
+                 "Follow the formatting instructions provided via stdin EXACTLY. "
+                 "Do NOT explain, do NOT add commentary."],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
-                timeout=self.timeout,
-            )
-            response_text = result.stdout.strip()
+                creationflags=_CREATIONFLAGS,
+            ))
+            stdout, stderr = proc.communicate(input=prompt, timeout=self.timeout)
+            response_text = stdout.strip()
             preview = response_text[:200] + "..." if len(response_text) > 200 else response_text
             logger.info(
                 "claude -p finished (rc=%d, %d-char response): %s",
-                result.returncode, len(response_text), preview,
+                proc.returncode, len(response_text), preview,
             )
             if not response_text:
                 logger.warning(
                     "claude -p: empty response.\n"
                     "  stdout (%d bytes): %r\n"
                     "  stderr (%d bytes): %r",
-                    len(result.stdout), result.stdout[:500],
-                    len(result.stderr), result.stderr[:500],
+                    len(stdout), stdout[:500],
+                    len(stderr), stderr[:500],
                 )
             return response_text
         except subprocess.TimeoutExpired:
+            if proc:
+                _kill_tree(proc)
             logger.warning("claude -p timed out after %ds", self.timeout)
             return ""
         except Exception as e:
+            if proc and proc.poll() is None:
+                _kill_tree(proc)
             logger.error("claude -p failed: %s", e)
             return ""
+        finally:
+            if proc:
+                _untrack(proc)
 
 
 class ClaudeProxy(BaseProxy):

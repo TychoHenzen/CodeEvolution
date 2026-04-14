@@ -373,3 +373,70 @@ def test_roundrobin_budget_too_small_returns_empty():
     """Budget smaller than chunk_size → empty schedule."""
     result = build_roundrobin_schedule(["a.rs", "b.rs"], total_iterations=5, chunk_size=10)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Shuffled scheduling
+# ---------------------------------------------------------------------------
+
+
+def test_shuffle_preserves_iteration_counts():
+    """Shuffling changes slot order but not how many iterations each file gets."""
+    entries = [
+        _entry("a.rs", 60.0),
+        _entry("b.rs", 30.0),
+        _entry("c.rs", 10.0),
+    ]
+    unshuffled = build_schedule(entries, total_iterations=500, chunk_size=10)
+    unshuffled_iters = {s.file_path: s.end_iter - s.start_iter for s in unshuffled}
+
+    shuffled = build_schedule(entries, total_iterations=500, chunk_size=10, shuffle=True)
+    shuffled_iters = {s.file_path: s.end_iter - s.start_iter for s in shuffled}
+
+    assert unshuffled_iters == shuffled_iters
+
+
+def test_shuffle_keeps_slots_contiguous():
+    """Shuffled slots must still be contiguous and start at 0."""
+    entries = [_entry(f"f{i}.rs", float(10 - i)) for i in range(5)]
+    result = build_schedule(entries, total_iterations=200, chunk_size=10, shuffle=True)
+    assert result[0].start_iter == 0
+    for i in range(1, len(result)):
+        assert result[i].start_iter == result[i - 1].end_iter
+
+
+def test_shuffle_covers_all_iterations():
+    """Total iterations across shuffled slots equals the usable budget."""
+    entries = [_entry(f"f{i}.rs", float(10 - i)) for i in range(5)]
+    result = build_schedule(entries, total_iterations=200, chunk_size=10, shuffle=True)
+    total = sum(s.end_iter - s.start_iter for s in result)
+    assert total == 200
+
+
+def test_shuffle_produces_different_orders():
+    """Over many runs, shuffling should produce at least 2 distinct orderings."""
+    entries = [_entry(f"f{i}.rs", 1.0) for i in range(5)]
+    orderings = set()
+    for _ in range(50):
+        result = build_schedule(entries, total_iterations=500, chunk_size=10, shuffle=True)
+        order = tuple(s.file_path for s in result)
+        orderings.add(order)
+    assert len(orderings) >= 2, "shuffle=True should produce varied orderings"
+
+
+def test_shuffle_single_slot_is_noop():
+    """Shuffling a single-slot schedule returns it unchanged."""
+    entries = [_entry("only.rs", 99.0)]
+    result = build_schedule(entries, total_iterations=100, chunk_size=10, shuffle=True)
+    assert len(result) == 1
+    assert result[0].file_path == "only.rs"
+
+
+def test_roundrobin_shuffle_preserves_iteration_counts():
+    """Round-robin shuffle changes order but not per-file iteration counts."""
+    files = ["a.rs", "b.rs", "c.rs"]
+    unshuffled = build_roundrobin_schedule(files, total_iterations=300, chunk_size=10)
+    shuffled = build_roundrobin_schedule(files, total_iterations=300, chunk_size=10, shuffle=True)
+    unshuffled_iters = {s.file_path: s.end_iter - s.start_iter for s in unshuffled}
+    shuffled_iters = {s.file_path: s.end_iter - s.start_iter for s in shuffled}
+    assert unshuffled_iters == shuffled_iters

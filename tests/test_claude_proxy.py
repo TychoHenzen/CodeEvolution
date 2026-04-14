@@ -9,7 +9,7 @@ class TestBuildPrompt:
         messages = [{"role": "user", "content": "Hello"}]
         result = _ProxyHandler._build_prompt(messages)
         assert "Hello" in result
-        assert "Output ONLY the code" in result
+        assert "Follow the formatting instructions above EXACTLY" in result
 
     def test_system_and_user(self):
         messages = [

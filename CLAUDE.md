@@ -12,8 +12,8 @@ See `Reference.md` for the design rationale and `docs/superpowers/specs/2026-04-
 
 - Python 3.13, Click (CLI), OpenEvolve (evolutionary engine), Jinja2 (templates), PyYAML, openai (LLM client)
 - Four LLM backends (`provider` setting in config): `local` (llama-server/llama.cpp subprocess), `codex` (OpenAI Codex CLI via `codex_proxy.py`), `claude` (Claude Code CLI via `claude_proxy.py`), `mixed` (codex + claude behind a routing proxy via `mixed_proxy.py`)
-- Codex/Claude proxies are lightweight HTTP servers that translate OpenAI API calls to CLI invocations, sharing `base_proxy.py` for handler and lifecycle code
-- Mixed proxy routes requests by model name to the correct backend, with automatic fallback if one backend returns empty/error
+- Codex/Claude proxies are lightweight HTTP servers that translate OpenAI API calls to CLI invocations, sharing `base_proxy.py` for handler, lifecycle, and subprocess tracking code
+- Mixed proxy routes requests by model name to the correct backend, with configurable `claude_weight` (default 0.7) and automatic fallback if one backend returns empty/error
 - Default provider is `codex` (gpt-5.4-mini)
 
 ## Commands
@@ -50,6 +50,10 @@ The core value-add is the **3-layer evaluation pipeline** (`evaluator/pipeline.p
 Failed-gate candidates trigger **regeneration retries** (`max_gate_retries`): the LLM generates a fresh improvement from the original working code (via `llm_fixer.attempt_regenerate`) rather than wasting the iteration with score=0. Fitness weights are 50/50 performance + LLM judgment (no separate static analysis score).
 
 Config is a single dataclass hierarchy (`config.py`) loaded from YAML, with defaults in `codeevolve/defaults/evolution.yaml`.
+
+**Candidate merge**: After each evolution slot, `merge_top_candidates` layers non-conflicting improvements from the top K programs (default `merge_top_k=5`) onto the winner using diff-based patch extraction, so independent gains from runner-up candidates are not lost.
+
+**Schedule shuffling**: The file scheduler supports weighted random permutation (`shuffle_schedule=true`) so restarts visit files in a different order, avoiding restart bias where the same high-priority files always evolve first.
 
 **Model tier escalation**: The evaluator uses two quality tiers (`low`/`mid`) to balance cost vs. quality. Low (provider default) handles generation + LLM judging + first N-2 fixer attempts; mid (sonnet/gpt-5.3-codex) handles the last 2 fixer attempts. Tier config lives in the `tiers` YAML section and `ModelTiers` dataclass.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import difflib
 import json
 import logging
 import re
@@ -90,6 +91,97 @@ import yaml
 
 from codeevolve.config import CodeEvolveConfig, load_config
 from codeevolve.init_project import regenerate_evaluator
+
+
+# ---------------------------------------------------------------------------
+# Candidate merge: combine non-conflicting improvements from top K programs
+# ---------------------------------------------------------------------------
+
+def _extract_merge_patches(original: str, candidate: str) -> list[tuple[str, str]]:
+    """Extract candidate's changes vs original as (search, replace) pairs.
+
+    Only extracts 'replace' operations (where the candidate changed existing
+    lines).  Pure insertions are skipped because there is no unambiguous anchor
+    to locate them in a different variant.
+    """
+    orig_lines = original.splitlines(keepends=True)
+    cand_lines = candidate.splitlines(keepends=True)
+
+    sm = difflib.SequenceMatcher(None, orig_lines, cand_lines, autojunk=False)
+    patches: list[tuple[str, str]] = []
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        search = "".join(orig_lines[i1:i2])
+        replace = "".join(cand_lines[j1:j2])
+        # Only keep replacements where there is original text to match on.
+        # Pure insertions (empty search) can't be reliably located in the
+        # winner which may have shifted line numbers.
+        if search:
+            patches.append((search, replace))
+
+    return patches
+
+
+def _apply_merge_patches(code: str, patches: list[tuple[str, str]]) -> str:
+    """Apply non-conflicting patches to *code*.
+
+    A patch applies only when its *search* text is found verbatim in *code*
+    (meaning the winner did not modify that region).  Each match is replaced
+    at most once.  Empty search strings are skipped (pure insertions).
+    """
+    for search, replace in patches:
+        if search and search in code:
+            code = code.replace(search, replace, 1)
+    return code
+
+
+def merge_top_candidates(
+    original_code: str,
+    winner_code: str,
+    database,
+    merge_top_k: int = 5,
+) -> str:
+    """Merge non-conflicting improvements from top candidates into the winner.
+
+    After a slot finishes, each of the top K programs may contain a small,
+    independent improvement.  This function layers those non-conflicting
+    changes on top of the winner so they are not lost.
+
+    Args:
+        original_code: The code before evolution started (evolve-block level).
+        winner_code: The best program's code.
+        database: The OpenEvolve ProgramDatabase with all candidates.
+        merge_top_k: How many top programs to consider.
+
+    Returns:
+        The merged code (may be identical to *winner_code* if nothing merged).
+    """
+    top_programs = database.get_top_programs(n=merge_top_k)
+    if len(top_programs) <= 1:
+        return winner_code
+
+    merged = winner_code
+    merged_count = 0
+
+    for program in top_programs[1:]:
+        if program.code == winner_code or program.code == original_code:
+            continue
+
+        patches = _extract_merge_patches(original_code, program.code)
+        new_merged = _apply_merge_patches(merged, patches)
+        if new_merged != merged:
+            merged = new_merged
+            merged_count += 1
+
+    if merged_count > 0:
+        logger.info(
+            "Merged non-conflicting improvements from %d/%d additional candidates",
+            merged_count, len(top_programs) - 1,
+        )
+
+    return merged
 
 
 def build_openevolve_config_yaml(
@@ -459,6 +551,7 @@ def _run_single_file(
     # duplicate struct definitions, imports, or test modules that live
     # outside the evolvable region.
     frozen_context = ""
+    evolve_content = original_code
     evolve_program = initial_program
     parsed = parse_evolve_block(original_code)
     if parsed:
@@ -516,6 +609,16 @@ def _run_single_file(
 
     if best_program:
         best_code = best_program.code
+
+        # Merge non-conflicting improvements from other top candidates
+        if config.evolution.merge_top_k > 1 and hasattr(controller, "database"):
+            best_code = merge_top_candidates(
+                evolve_content,
+                best_code,
+                controller.database,
+                merge_top_k=config.evolution.merge_top_k,
+            )
+
         metrics = best_program.metrics or {}
         if "combined_score" in metrics:
             best_score = metrics["combined_score"]

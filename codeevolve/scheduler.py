@@ -8,6 +8,7 @@ cleanly between slots.
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 from collections.abc import Mapping
 
@@ -65,6 +66,7 @@ def build_schedule(
     total_iterations: int,
     chunk_size: int = 10,
     file_lengths: Mapping[str, int] | None = None,
+    shuffle: bool = False,
 ) -> list[ScheduleSlot]:
     """Build a rotation schedule proportional to tech debt scores.
 
@@ -77,11 +79,13 @@ def build_schedule(
                     chunks.  Must be >= 1.
         file_lengths: Optional mapping of file_path -> line count. When present,
             longer files get a gentle score boost before chunk allocation.
+        shuffle: When True, randomly permute slot ordering weighted by iteration
+            count so restarts visit files in a different order each time.
 
     Returns:
         List of :class:`ScheduleSlot` with non-overlapping, contiguous ranges.
-        Highest-scoring file first.  Empty when the budget is too small to fit
-        even a single chunk.
+        When *shuffle* is False, highest-scoring file first.  Empty when the
+        budget is too small to fit even a single chunk.
     """
     if not entries:
         return []
@@ -152,15 +156,26 @@ def build_schedule(
         i += 1
 
     # --- Build slots -------------------------------------------------------
-    slots: list[ScheduleSlot] = []
-    cursor = 0
+    # First pass: collect (file_path, iters) pairs without cursor positions
+    raw_slots: list[tuple[str, int]] = []
     for entry, chunks in zip(entries, floored):
         if chunks == 0:
             continue
-        iters = chunks * chunk_size
+        raw_slots.append((entry.file_path, chunks * chunk_size))
+
+    # Optionally shuffle: weighted random permutation so restarts don't
+    # always evolve files in the same order.  Weight = iteration count
+    # (proportional to importance) so higher-priority files still tend to
+    # appear earlier, but with randomisation.
+    if shuffle and len(raw_slots) > 1:
+        raw_slots = _weighted_shuffle(raw_slots)
+
+    slots: list[ScheduleSlot] = []
+    cursor = 0
+    for file_path, iters in raw_slots:
         slots.append(
             ScheduleSlot(
-                file_path=entry.file_path,
+                file_path=file_path,
                 start_iter=cursor,
                 end_iter=cursor + iters,
             )
@@ -170,11 +185,30 @@ def build_schedule(
     return slots
 
 
+def _weighted_shuffle(items: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """Randomly permute items with probability proportional to iteration count.
+
+    Files with more iterations (= higher importance) are more likely to appear
+    earlier, but every ordering is possible.  This avoids the restart-bias
+    problem where a deterministic sort always evolves the same files first.
+    """
+    result: list[tuple[str, int]] = []
+    remaining = list(items)
+    while remaining:
+        weights = [iters for _, iters in remaining]
+        # random.choices returns a list; pick one item
+        [chosen] = random.choices(remaining, weights=weights, k=1)
+        result.append(chosen)
+        remaining.remove(chosen)
+    return result
+
+
 def build_roundrobin_schedule(
     file_paths: list[str],
     total_iterations: int,
     chunk_size: int = 10,
     file_lengths: Mapping[str, int] | None = None,
+    shuffle: bool = False,
 ) -> list[ScheduleSlot]:
     """Build an equal-weight round-robin schedule for files without debt scores.
 
@@ -191,6 +225,8 @@ def build_roundrobin_schedule(
                     chunks.  Must be >= 1.
         file_lengths: Optional mapping of file_path -> line count. When present,
             longer files get a gentle score boost before chunk allocation.
+        shuffle: When True, randomly permute slot ordering so restarts visit
+            files in a different order each time.
 
     Returns:
         List of :class:`ScheduleSlot` with non-overlapping, contiguous ranges,
@@ -212,4 +248,5 @@ def build_roundrobin_schedule(
         total_iterations=total_iterations,
         chunk_size=chunk_size,
         file_lengths=file_lengths,
+        shuffle=shuffle,
     )

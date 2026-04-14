@@ -41,40 +41,52 @@ class _ProxyHandler(BaseProxyHandler):
     timeout: int = 300
 
     def _invoke_cli(self, prompt: str, model: str = "") -> str:
+        from codeevolve.base_proxy import _track, _untrack, _kill_tree, _CREATIONFLAGS
+
         use_model = model or self.model
         logger.info("codex-proxy: calling codex exec (%d-char prompt, model=%s)", len(prompt), use_model)
+        proc = None
         try:
-            result = subprocess.run(
+            proc = _track(subprocess.Popen(
                 [self.codex_path, "exec",
                  "-m", use_model,
                  "--full-auto"],
-                input=prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
-                timeout=self.timeout,
-            )
-            response_text = result.stdout.strip()
+                creationflags=_CREATIONFLAGS,
+            ))
+            stdout, stderr = proc.communicate(input=prompt, timeout=self.timeout)
+            response_text = stdout.strip()
             preview = response_text[:200] + "..." if len(response_text) > 200 else response_text
             logger.info(
                 "codex exec finished (rc=%d, %d-char response): %s",
-                result.returncode, len(response_text), preview,
+                proc.returncode, len(response_text), preview,
             )
             if not response_text:
                 logger.warning(
                     "codex exec: parsed empty response.\n"
                     "  stdout (%d bytes): %r\n"
                     "  stderr (%d bytes): %r",
-                    len(result.stdout), result.stdout[:500],
-                    len(result.stderr), result.stderr[:500],
+                    len(stdout), stdout[:500],
+                    len(stderr), stderr[:500],
                 )
             return response_text
         except subprocess.TimeoutExpired:
+            if proc:
+                _kill_tree(proc)
             logger.warning("codex exec timed out after %ds", self.timeout)
             return ""
         except Exception as e:
+            if proc and proc.poll() is None:
+                _kill_tree(proc)
             logger.error("codex exec failed: %s", e)
             return ""
+        finally:
+            if proc:
+                _untrack(proc)
 
 
 class CodexProxy(BaseProxy):

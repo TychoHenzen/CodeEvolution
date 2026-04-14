@@ -49,6 +49,9 @@ evolution:
   exploration_ratio: 0.2      # probability of random parent selection (exploration)
   exploitation_ratio: 0.7     # probability of elite parent selection (exploitation)
   temperature: 0.7            # LLM sampling temperature
+  claude_weight: 0.7          # weight for claude model in mixed mode (codex gets 1 - this)
+  shuffle_schedule: true      # randomize file visit order (weighted by score/length) to avoid restart bias
+  merge_top_k: 5              # after each slot, merge non-conflicting improvements from top K candidates
 
 rust:
   cargo_path: "cargo"

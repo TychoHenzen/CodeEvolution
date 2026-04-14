@@ -226,6 +226,12 @@ def run(config_path: Path, fresh: bool):
 
     click.echo(f"  Loading config from {config_path.relative_to(project_path.parent)}")
 
+    # Ensure all CLI subprocesses (wsl.exe, codex, claude) are killed on exit,
+    # even if the process is terminated without reaching the finally block.
+    import atexit
+    from codeevolve.base_proxy import _kill_all_children
+    atexit.register(_kill_all_children)
+
     # Start the LLM backend based on provider setting.
     backend = None
     if config.provider == "codex":
@@ -351,6 +357,7 @@ def run(config_path: Path, fresh: bool):
                     total_iterations=config.evolution.max_iterations,
                     chunk_size=config.evolution.checkpoint_interval,
                     file_lengths=weighted_lengths,
+                    shuffle=config.evolution.shuffle_schedule,
                 )
 
     try:
@@ -389,6 +396,7 @@ def run(config_path: Path, fresh: bool):
                     total_iterations=config.evolution.max_iterations,
                     chunk_size=config.evolution.checkpoint_interval,
                     file_lengths=ranked_lengths,
+                    shuffle=config.evolution.shuffle_schedule,
                 )
                 if rr_schedule:
                     click.echo(f"  Round-robin schedule: {len(rr_schedule)} slots across {len(ranked)} files")

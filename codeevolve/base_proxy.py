@@ -9,11 +9,77 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# On Windows, prevent each subprocess from spawning a conhost.exe.
+# CLI proxies don't need a console window.
+_CREATIONFLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+# ---------------------------------------------------------------------------
+# Subprocess lifecycle tracking
+# ---------------------------------------------------------------------------
+# Thread-safe tracking of in-flight CLI subprocesses so they can be
+# killed during proxy shutdown.  Without this, Ctrl+C or timeouts kill
+# only the wsl.exe shim while the Linux-side process keeps running.
+
+_active_children: set[subprocess.Popen] = set()
+_children_lock = threading.Lock()
+
+
+def _track(proc: subprocess.Popen) -> subprocess.Popen:
+    """Register a subprocess for cleanup on proxy shutdown."""
+    with _children_lock:
+        _active_children.add(proc)
+    return proc
+
+
+def _untrack(proc: subprocess.Popen) -> None:
+    """Remove a subprocess from cleanup tracking."""
+    with _children_lock:
+        _active_children.discard(proc)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill a process and its entire tree.
+
+    On Windows, ``taskkill /T`` kills the process tree — critical for
+    wsl.exe subprocesses where a plain kill only terminates the shim.
+    """
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            subprocess.call(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except Exception:
+            proc.kill()
+    else:
+        proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _kill_all_children() -> None:
+    """Kill all tracked child processes and their trees."""
+    with _children_lock:
+        children = list(_active_children)
+    for proc in children:
+        _kill_tree(proc)
+    with _children_lock:
+        _active_children.clear()
 
 
 class BaseProxyHandler(BaseHTTPRequestHandler):
@@ -100,8 +166,8 @@ class BaseProxyHandler(BaseHTTPRequestHandler):
         return (
             f"{system}\n\n"
             f"{user_text}\n\n"
-            "IMPORTANT: Output ONLY the code. Do NOT explain, do NOT ask "
-            "questions, do NOT offer to help. Just output the code."
+            "IMPORTANT: Follow the formatting instructions above EXACTLY. "
+            "Do NOT explain, do NOT ask questions, do NOT add commentary."
         )
 
 
@@ -137,6 +203,7 @@ class BaseProxy:
         self._thread.start()
 
     def stop(self) -> None:
+        _kill_all_children()
         if self._server:
             self._server.shutdown()
             self._server = None

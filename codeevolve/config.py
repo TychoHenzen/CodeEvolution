@@ -51,6 +51,9 @@ class EvolutionConfig:
     exploration_ratio: float = 0.2   # probability of random parent selection
     exploitation_ratio: float = 0.7  # probability of elite parent selection
     temperature: float = 0.7         # LLM sampling temperature
+    claude_weight: float = 0.7       # weight for claude in mixed mode (codex gets 1 - this)
+    shuffle_schedule: bool = True    # randomize file order (weighted by score/length)
+    merge_top_k: int = 5            # merge non-conflicting improvements from top K candidates
 
 
 @dataclass
@@ -260,8 +263,8 @@ class CodeEvolveConfig:
                 "api_base": self.api_base,
                 "api_key": "no-key",
                 "models": [
-                    {"name": self.codex.model, "weight": 0.5},
-                    {"name": self.claude.model, "weight": 0.5},
+                    {"name": self.codex.model, "weight": round(1.0 - self.evolution.claude_weight, 2)},
+                    {"name": self.claude.model, "weight": self.evolution.claude_weight},
                 ] if self.provider == "mixed" else [
                     {"name": self.model_name, "weight": 1.0},
                 ],
